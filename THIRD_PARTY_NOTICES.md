@@ -8,3 +8,5 @@
 | [Adafruit GFX classic font](https://github.com/adafruit/Adafruit-GFX-Library/blob/master/glcdfont.c) | Matching 5×7 glyph data in `src/Panel.cpp`. | [Adafruit GFX license](LICENSES/Adafruit_GFX.txt) |
 
 Include these notices and license texts with source or binary redistributions as required by the applicable terms.
+
+The USB builder uses the MegaCommand DIY 1.0.4 firmware distributed in the [MCL 5.00 USB DFU bundle](https://github.com/jmamma/MCL/releases/tag/5.00). It applies the patch locally to that upstream image. The project's MIT license covers the original patch code. The upstream firmware retains its applicable terms.

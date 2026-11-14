@@ -17,7 +17,8 @@ volatile uint32_t clockMs = 0;
 Uart usb(&UCSR0A);
 Uart din(&UCSR1A);
 Panel panel;
-ControlFilter dinFilter;
+ControlFilter usbFilter(MidiSide::Usb);
+ControlFilter dinFilter(MidiSide::Din);
 ByteQueue<1024> toDin;
 ByteQueue<1024> toUsb;
 MidiBoundary dinStream;
@@ -26,6 +27,8 @@ MidiBoundary dinInputStream;
 MidiBoundary usbInputStream;
 
 bool buttonPending = false;
+uint8_t hostLimitPending = 0xFF;
+bool reportPending = false;
 bool resetDinStatus = false;
 bool resetUsbStatus = false;
 bool usbRouteError = false;
@@ -71,11 +74,24 @@ bool dinIdle() { return din.txIdle(); }
 void setDinSpeed(uint8_t code) { din.setSpeed(code); }
 void publishSpeed(uint8_t code) {
     requestedUsbSpeed = code;
+    reportPending = true;
     usbNextAttempt = 0;
     usbSwitchFailed = false;
 }
 
 TurboLink turbo(writeDinControl, dinIdle, setDinSpeed, publishSpeed);
+
+void setUsbControl(const uint8_t *frame, uint8_t length) {
+    if (frame[6] == 0x01 && length == 8) {
+        reportPending = true;
+    } else if (frame[6] == 0x03 && length == 9 && frame[7] <= 11) {
+        hostLimitPending = frame[7];
+        droppedMidi = false;
+        usbSwitchFailed = false;
+    } else {
+        reportPending = true;
+    }
+}
 
 void readUsb(uint32_t now) {
     uint8_t byte;
@@ -102,10 +118,11 @@ void readUsb(uint32_t now) {
         } else {
             hostTrafficSeen = true;
             if (byte != 0xFE || usbSpeed == normalSpeed) {
-                forward(byte);
+                usbFilter.accept(byte, now, forward, setUsbControl);
             }
         }
     }
+    usbFilter.expire(now, forward);
 }
 
 void readDin(uint32_t now) {
@@ -147,7 +164,7 @@ void readDin(uint32_t now) {
 
 bool startUsbSwitch(uint32_t now) {
     if (!usb.txIdle() || !din.txIdle() || !usbStream.complete() || !dinStream.complete() ||
-        !usbInputStream.complete()) {
+        !usbInputStream.complete() || usbFilter.pending()) {
         return false;
     }
     const uint8_t control[] = {0xF0, 0x00, 0x20, 0x3C, 0x00, 0x00, 0x20,
@@ -172,11 +189,13 @@ void serviceUsbControl(uint32_t now) {
             hostTrafficSeen = true;
             switchingUsb = false;
             usbSwitchFailed = false;
+            reportPending = true;
             resetUsbStatus = true;
             // Close the prefix that the 16U2 can emit before it sees the
             // final byte of its private command.
             const uint8_t end = 0xF7;
             usb.write(&end, 1);
+            usbFilter.clear();
             usbInputStream = MidiBoundary{};
             awaitUsbStatus = true;
         } else if (now - usbSwitchStarted >= 25 && usb.txIdle()) {
@@ -191,6 +210,17 @@ void serviceUsbControl(uint32_t now) {
     if (requestedUsbSpeed != usbSpeed && !usbRouteError && !dinRouteError) {
         if (!usbNextAttempt || static_cast<int32_t>(now - usbNextAttempt) >= 0) {
             if (startUsbSwitch(now)) return;
+        }
+    }
+    // Report the lower of the DIN and USB UART rates.
+    const uint8_t rate = turbo.speed() < usbSpeed ? turbo.speed() : usbSpeed;
+    if (reportPending && !turbo.busy() && usbStream.complete() && !dinRouteError &&
+        (usbSpeed == requestedUsbSpeed || usbSwitchFailed)) {
+        const uint8_t report[] = {0xF0, 0x00, 0x20, 0x3C, 0x04, 0x00, 0x02,
+                                  rate, 0xF7};
+        if (usb.write(report, sizeof(report))) {
+            resetUsbStatus = true;
+            reportPending = false;
         }
     }
 }
@@ -217,10 +247,17 @@ bool transferByte(ByteQueue<1024> &queue, Uart &output, MidiBoundary &stream,
 
 void serviceDin(uint32_t now) {
     if (usbRouteError || switchingUsb) return;
-    if (buttonPending && dinStream.complete() && din.txIdle()) {
+    const bool requestPending = hostLimitPending != 0xFF || buttonPending;
+    if (requestPending && dinStream.complete() && din.txIdle()) {
         const bool wasPaused = turbo.pausePayload();
-        buttonPending = false;
-        turbo.toggle(now);
+        if (hostLimitPending != 0xFF) {
+            const uint8_t limit = hostLimitPending;
+            hostLimitPending = 0xFF;
+            turbo.setLimit(limit, now);
+        } else {
+            buttonPending = false;
+            turbo.toggle(now);
+        }
         if (!wasPaused && turbo.pausePayload() && !dinInputStream.complete()) {
             dinRouteError = true;
         }
@@ -228,7 +265,7 @@ void serviceDin(uint32_t now) {
 
     for (uint8_t budget = 0; budget < 32 && !toDin.empty() &&
          (!turbo.pausePayload() || !dinStream.complete()); ++budget) {
-        if (dinStream.complete() && buttonPending) {
+        if (dinStream.complete() && (hostLimitPending != 0xFF || buttonPending)) {
             break;
         }
         if (!transferByte(toDin, din, dinStream, resetDinStatus)) {
@@ -243,10 +280,12 @@ void serviceUsbData(uint32_t now) {
         return;
     }
     for (uint8_t budget = 0; budget < 32 && !toUsb.empty(); ++budget) {
-        // Finish the current USB MIDI message before switching the UART rate.
+        // Finish any in-flight SysEx before injecting our own USB messages.
         const bool switchDue = requestedUsbSpeed != usbSpeed && usbInputStream.complete() &&
                                (!usbNextAttempt || static_cast<int32_t>(now - usbNextAttempt) >= 0);
-        if (usbStream.complete() && switchDue) {
+        if (usbStream.complete() &&
+            (switchDue || (reportPending && !turbo.busy() &&
+                           (requestedUsbSpeed == usbSpeed || usbSwitchFailed)))) {
             break;
         }
         if (!transferByte(toUsb, usb, usbStream, resetUsbStatus)) {
@@ -271,6 +310,7 @@ void handleErrors(uint32_t now) {
         if (dinStream.sysex() && !din.write(&end, 1)) {
             return;
         }
+        usbFilter.clear();
         toDin.clear();
         dinStream = MidiBoundary{};
         usbInputStream = MidiBoundary{};

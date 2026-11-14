@@ -98,7 +98,8 @@ void TurboLink::failNegotiation(uint32_t now, bool retry) {
 
 void TurboLink::toggle(uint32_t now) {
   if (state_ == State::Recovering && restartLimit_ == 0) {
-    restartLimit_ = maximumSpeed;
+    if (hostLimit_ == normalSpeed) hostLimit_ = maximumSpeed;
+    restartLimit_ = hostLimit_;
     failed_ = false;
     return;
   }
@@ -106,9 +107,33 @@ void TurboLink::toggle(uint32_t now) {
     stop(now, 0, false);
     return;
   }
+  if (hostLimit_ == normalSpeed) hostLimit_ = maximumSpeed;
   failed_ = false;
-  attemptLimit_ = maximumSpeed;
+  attemptLimit_ = hostLimit_;
   enter(State::SendRequest, now);
+}
+
+void TurboLink::setLimit(uint8_t speedCode, uint32_t now) {
+  const uint8_t previousLimit = hostLimit_;
+  if (speedCode > maximumSpeed) speedCode = maximumSpeed;
+  hostLimit_ = highestSpeed(localCapabilities, speedCode);
+  if (hostLimit_ == normalSpeed) {
+    stop(now, 0, false);
+    return;
+  }
+  if (state_ == State::Normal) {
+    failed_ = false;
+    attemptLimit_ = hostLimit_;
+    enter(State::SendRequest, now);
+  } else if (state_ == State::Recovering && restartLimit_ == 0) {
+    restartLimit_ = hostLimit_;
+    failed_ = false;
+  } else if (hostLimit_ != previousLimit &&
+             (speed_ != hostLimit_ || busy())) {
+    stop(now, hostLimit_, false);
+  } else if (!busy()) {
+    publishSpeed(speed_, true);
+  }
 }
 
 bool TurboLink::sendCommand(uint8_t command, const uint8_t* payload,
@@ -168,7 +193,7 @@ bool TurboLink::receive(const uint8_t* frame, uint8_t size, uint32_t now) {
       if (payload[0] == normalSpeed && payload[1] == normalSpeed) {
         enter(State::Normal, now);
       } else if (payload[1] > normalSpeed && payload[0] >= payload[1] &&
-                 payload[0] <= maximumSpeed &&
+                 payload[0] <= hostLimit_ &&
                  (responderMask_ & capabilityBit(payload[0])) &&
                  (responderMask_ & capabilityBit(payload[1]))) {
         testSpeed_ = payload[0];
@@ -272,7 +297,7 @@ void TurboLink::tick(uint32_t now) {
       else if (elapsed > 45) failNegotiation(now, true);
       return;
     case State::SendAnswer: {
-      responderMask_ = responderCapabilities;
+      responderMask_ = allowedMask(hostLimit_) & responderCapabilities;
       const uint8_t response[] = {responderMask_, 0, responderMask_, 0};
       if (sendCommand(SpeedAnswer, response, sizeof(response))) {
         enter(State::WaitNegotiation, now);

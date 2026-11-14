@@ -47,9 +47,13 @@ private:
     bool sysex_ = false;
 };
 
-// Buffer DIN control frames while forwarding other MIDI messages.
+enum class MidiSide : uint8_t { Usb, Din };
+
+// Buffer short control frames while forwarding other MIDI messages.
 class ControlFilter {
 public:
+    explicit ControlFilter(MidiSide side) : side_(side) {}
+
     template <typename Forward, typename Control>
     void accept(uint8_t byte, uint32_t now, Forward forward, Control control) {
         if (byte >= 0xF8) {
@@ -77,7 +81,7 @@ public:
         bytes_[size_++] = byte;
         lastByte_ = now;
         if (byte == 0xF7) {
-            const bool mclMode = bytes_[1] == 0x7D;
+            const bool mclMode = side_ == MidiSide::Din && bytes_[1] == 0x7D;
             if (mclMode && size_ == 8) {
                 // This is also a private command on the USB chip.
                 size_ = 0;
@@ -99,6 +103,7 @@ public:
         }
     }
 
+    bool pending() const { return size_ != 0; }
     void clear() { size_ = 0; }
 
 private:
@@ -111,20 +116,24 @@ private:
     }
 
     bool matchesPrefix(uint8_t byte) const {
-        if (bytes_[1] == 0x7D) {
+        if (side_ == MidiSide::Din && bytes_[1] == 0x7D) {
             const uint8_t prefix[] = {0xF0, 0x7D, 0x4D, 0x43, 0x4C, 0x01};
             return size_ <= sizeof(prefix) ? byte == prefix[size_ - 1] : size_ == 7;
         }
-        const uint8_t prefix[] = {0xF0, 0x00, 0x20, 0x3C, 0x00, 0x00};
+        const uint8_t prefix[] = {0xF0, 0x00, 0x20, 0x3C,
+                                  side_ == MidiSide::Usb ? uint8_t{0x04} : uint8_t{0x00},
+                                  0x00};
         if (size_ <= sizeof(prefix)) {
             return byte == prefix[size_ - 1];
         }
         if (size_ == sizeof(prefix) + 1) {
-            return (byte >= 0x10 && byte <= 0x17) || byte == 0x20;
+            return side_ == MidiSide::Usb ? byte == 0x01 || byte == 0x03
+                                          : (byte >= 0x10 && byte <= 0x17) || byte == 0x20;
         }
         return true;
     }
 
+    MidiSide side_;
     uint8_t bytes_[16];
     uint8_t size_ = 0;
     uint32_t lastByte_ = 0;

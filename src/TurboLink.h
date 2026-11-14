@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 
-// TurboMIDI control on the DIN link. sendDin must enqueue the entire buffer
-// or leave the queue unchanged.
+// TurboMIDI control on the DIN link. The callbacks are serviced by the main
+// loop. sendDin must enqueue the entire buffer or leave the queue unchanged.
 class TurboLink {
  public:
   static constexpr uint8_t normalSpeed = 1;
@@ -13,12 +13,13 @@ class TurboLink {
             void (*setDinRate)(uint8_t), void (*notifySpeed)(uint8_t));
 
   void toggle(uint32_t now);
+  void setLimit(uint8_t speedCode, uint32_t now);
   bool receive(const uint8_t* frame, uint8_t size, uint32_t now);
   void observeDinByte(uint8_t byte, uint32_t now);
   void reportTransportError(uint32_t now);
   void tick(uint32_t now);
 
-  // During a transition, speed is the last settled DIN rate.
+  // During a transition, speed is the last settled rate reported to the host.
   uint8_t speed() const { return speed_; }
   bool busy() const;
   bool pausePayload() const { return busy() && state_ != State::WaitNegotiation; }
@@ -70,6 +71,7 @@ class TurboLink {
   uint32_t lastFrameByte_ = 0;
   uint32_t lastDinByte_ = 0;
   uint32_t lastSenseSent_ = 0;
+  uint8_t hostLimit_ = maximumSpeed;
   uint8_t attemptLimit_ = maximumSpeed;
   uint8_t restartLimit_ = 0;
   uint8_t testSpeed_ = normalSpeed;

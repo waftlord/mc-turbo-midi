@@ -1,31 +1,42 @@
 # MCL Turbo MIDI
 
-MCL Turbo MIDI is firmware for using MegaCommand DIY hardware as a USB-to-DIN MIDI bridge with TurboMIDI negotiation on MIDI port 1. It replaces the main application on the ATmega2560.
+MCL Turbo MIDI turns MegaCommand DIY hardware into a USB-to-DIN MIDI bridge with TurboMIDI negotiation on MIDI port 1.
 
 ## Hardware
 
-| Component | Role |
-| --- | --- |
-| ATmega2560 | Runs the bridge application built from this repository. |
-| ATmega16U2 | Handles USB MIDI and USB serial. Its firmware is obtained separately. |
+| Chip | Image | Role |
+| --- | --- | --- |
+| ATmega2560 | `megacommand-diy-atmega2560.hex` | Main application for MIDI routing, rate negotiation, and panel controls. |
+| ATmega16U2 | `megacommand-diy-atmega16u2.hex` | USB MIDI and USB serial interface with the bridge's USB flow-control patch. |
 
-The USB firmware reference is `megacommand-diy-usb-midi-1.0.4.hex` in `megacmd_usb_dfu_1.0.4.zip` from [MCL 5.00](https://github.com/jmamma/MCL/releases/tag/5.00). The stock image provides USB MIDI and the UART rate-switch command used by the bridge. It is the baseline for hardware validation. End-to-end USB MIDI and sustained transfers at standard and TurboMIDI rates are pending validation on that baseline.
+## Build both images
 
-## Build and upload
+Install [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html) and Python 3.9 or later. Download `megacmd_usb_dfu_1.0.4.zip` from [MCL 5.00](https://github.com/jmamma/MCL/releases/tag/5.00) into the repository root. Keep the archive intact. The patch builder reads and verifies the MegaCommand DIY image inside it.
 
-Install [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html), then run:
+From the repository root on macOS or Linux, run:
 
 ```sh
 pio run -e megacommand_diy
+mkdir -p build
+cp .pio/build/megacommand_diy/firmware.hex build/megacommand-diy-atmega2560.hex
+pio pkg exec -p platformio/toolchain-atmelavr@1.70300.191015 -- \
+  python3 tools/build_usb_firmware.py --bundle megacmd_usb_dfu_1.0.4.zip
+shasum -a 256 -c SHA256SUMS
 ```
 
-The build writes the ATmega2560 image to `.pio/build/megacommand_diy/firmware.hex`. With the device in serial bootloader mode, upload over USB serial:
+Both outputs are in `build/`. `SHA256SUMS` records the expected byte-for-byte results from the tested pair. The USB builder checks its output against the expected SHA-256 before writing the file. The PlatformIO configuration pins the AVR platform and toolchain used for the reference build.
+
+## Install
+
+1. Use the [MegaCommand DIY DFU instructions in the upstream bundle](https://github.com/jmamma/MCL/releases/tag/5.00) with `build/megacommand-diy-atmega16u2.hex` as the file to flash. This image goes on the ATmega16U2 in hardware DFU mode.
+2. Put the device into serial bootloader mode for the ATmega2560. With MCL installed, select **OS UPGRADE** from its boot menu. With the bridge installed, hold **PAGE** at power-on to request USB serial mode.
+3. Upload the main application via USB serial with PlatformIO. The upload command uses the same ATmega2560 build copied to `build/megacommand-diy-atmega2560.hex` above.
 
 ```sh
 pio run -e megacommand_diy -t upload
 ```
 
-If PlatformIO selects the wrong port, specify the device's serial port with `--upload-port`. With MCL installed, select **OS UPGRADE** from its boot menu. With the bridge installed, hold **PAGE** at power-on to request USB serial mode. Follow the upstream DFU instructions for ATmega16U2 updates. Use the PlatformIO output only with the ATmega2560 serial bootloader.
+If PlatformIO selects the wrong port, specify the device's serial port with `--upload-port`.
 
 ## Operation
 
