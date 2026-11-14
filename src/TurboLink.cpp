@@ -73,8 +73,8 @@ void TurboLink::stop(uint32_t now, uint8_t restartLimit, bool failed) {
   failed_ = failed;
   restartLimit_ = restartLimit;
 
-  // Once we have sent a speed proposal, the peer may have switched even if
-  // its acknowledgement was lost. Stop keepalives and allow it to time out.
+  // A peer can switch speeds before its acknowledgement arrives.
+  // Stop keepalives so the peer can time out.
   if (state_ == State::Recovering) return;
   const bool peerMayHaveSwitched = wireSpeed_ != normalSpeed ||
                                    state_ == State::WaitAck ||

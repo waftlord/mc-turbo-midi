@@ -280,7 +280,7 @@ void serviceUsbData(uint32_t now) {
         return;
     }
     for (uint8_t budget = 0; budget < 32 && !toUsb.empty(); ++budget) {
-        // Finish any in-flight SysEx before injecting our own USB messages.
+        // Complete the current SysEx before sending USB control messages.
         const bool switchDue = requestedUsbSpeed != usbSpeed && usbInputStream.complete() &&
                                (!usbNextAttempt || static_cast<int32_t>(now - usbNextAttempt) >= 0);
         if (usbStream.complete() &&

@@ -24,13 +24,13 @@ pio pkg exec -p platformio/toolchain-atmelavr@1.70300.191015 -- \
 shasum -a 256 -c SHA256SUMS
 ```
 
-Both outputs are in `build/`. `SHA256SUMS` records the expected byte-for-byte results from the tested pair. The USB builder checks its output against the expected SHA-256 before writing the file. The PlatformIO configuration pins the AVR platform and toolchain used for the reference build.
+Both images are written to `build/`. `SHA256SUMS` lists the expected checksum for each image. The USB builder verifies its output before writing it. `platformio.ini` pins the AVR platform and toolchain.
 
 ## Install
 
 1. Use the [MegaCommand DIY DFU instructions in the upstream bundle](https://github.com/jmamma/MCL/releases/tag/5.00) with `build/megacommand-diy-atmega16u2.hex` as the file to flash. This image goes on the ATmega16U2 in hardware DFU mode.
 2. Put the device into serial bootloader mode for the ATmega2560. With MCL installed, select **OS UPGRADE** from its boot menu. With the bridge installed, hold **PAGE** at power-on to request USB serial mode.
-3. Upload the main application via USB serial with PlatformIO. The upload command uses the same ATmega2560 build copied to `build/megacommand-diy-atmega2560.hex` above.
+3. Upload the ATmega2560 application via USB serial with PlatformIO.
 
 ```sh
 pio run -e megacommand_diy -t upload
