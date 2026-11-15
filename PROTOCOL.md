@@ -23,18 +23,7 @@ Change speeds between transfers with one initiator per DIN pair. A simultaneous 
 
 For stock equipment or an unknown model, begin at 1× or use a conservative 4× cap during qualification. Raise the cap only after the peer is stable. For unidirectional connections, use 1×. Active Sensing used for Turbo is link-local. The bridge also consumes exact DIN TurboMIDI handshake frames and a host-side USB recovery command. These reserved frames are not a general-purpose tunnel.
 
-## Optional encoder reports
-
-Build the `megacommand_mcdt` target to expose the MegaCommand panel. Reports travel upstream on Port 1 and do not go to either instrument.
-
-```text
-F0 7D 4D 43 4C 02 01 seq buttons A B C D F7
-```
-
-- `seq` increments modulo 128. A gap indicates reports may have been missed. Resynchronize on the first report after a disconnect.
-- The low four bits of `buttons` are the current debounced pressed states of A–D.
-- The four deltas use a bias of 64. `40` hex means no change, `41` means +1, and `3F` means −1.
-- Idle reports arrive about twice per second. During a long Port 1 SysEx receive they wait until that stream can accept a complete message. Treat the button mask as sampled state.
+## Web MIDI examples
 
 [The passive capture example](examples/passive-capture.html) listens to either or both MIDI inputs and saves raw SysEx without sending MIDI. For applications that control bridge speed, [the Web MIDI adapter](examples/web-midi.mjs) takes a paired input and output obtained with `navigator.requestMIDIAccess({sysex: true})` in a secure context. Call `querySpeed()` or `setLimit(4)` as needed and receive ordinary messages through `onMidi`. Other MIDI backends can send and parse the same bytes.
 

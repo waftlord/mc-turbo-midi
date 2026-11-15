@@ -172,11 +172,6 @@ void Panel::begin() {
     }
 
     rawDown_ = stableDown_ = pressedButtons();
-#ifdef MCDT_PANEL
-    latchPanel();
-    encoderButtons_ = rawEncoderButtons_ = static_cast<uint8_t>(~shiftReadByte()) & 0x0f;
-    encoderAB_ = previousAB_ = shiftReadByte();
-#endif
     recoveryHeld_ = heldBeforeReset && (stableDown_ & 1);
     if (recoveryHeld_) {
         showUsbUpdate();
@@ -224,57 +219,6 @@ uint8_t Panel::takeTurboPresses(uint32_t now) {
     rawDown_ = down;
     return pressed;
 }
-
-#ifdef MCDT_PANEL
-void Panel::pollEncoders(uint32_t now) {
-    latchPanel();
-    const uint8_t buttons = static_cast<uint8_t>(~shiftReadByte()) & 0x0f;
-    const uint8_t inputs = shiftReadByte();
-    if (buttons != rawEncoderButtons_) {
-        rawEncoderButtons_ = buttons;
-        encoderButtonsChangedAt_ = now;
-    }
-    if (now - encoderButtonsChangedAt_ >= debounceMs) encoderButtons_ = buttons;
-
-    // Match the half-step transitions in MCL's AVR GUI hardware decoder.
-    for (uint8_t i = 0; i < 4; ++i) {
-        const uint8_t shift = i * 2;
-        const uint8_t old = (encoderAB_ >> shift) & 3;
-        const uint8_t next = (inputs >> shift) & 3;
-        if (old == next) continue;
-        const uint8_t mask = 3 << shift;
-        const uint8_t previous = (previousAB_ >> shift) & 3;
-        previousAB_ = (previousAB_ & ~mask) | (old << shift);
-        if ((previous == 0 && old == 1 && next == 3) ||
-            (previous == 3 && old == 2 && next == 0)) {
-            if (encoderDelta_[i] < 32767) ++encoderDelta_[i];
-        } else if ((previous == 0 && old == 2 && next == 3) ||
-                   (previous == 3 && old == 1 && next == 0)) {
-            if (encoderDelta_[i] > -32767) --encoderDelta_[i];
-        }
-    }
-    encoderAB_ = inputs;
-}
-
-bool Panel::takeEncoderReport(uint32_t now, uint8_t *data) {
-    const uint32_t elapsed = now - lastEncoderReport_;
-    if (elapsed < 8) return false;
-    bool changed = encoderButtons_ != reportedEncoderButtons_;
-    for (uint8_t i = 0; i < 4; ++i) changed |= encoderDelta_[i] != 0;
-    if (!changed && elapsed < 500) return false;
-
-    lastEncoderReport_ = now;
-    reportedEncoderButtons_ = encoderButtons_;
-    data[0] = encoderSequence_++ & 0x7f;
-    data[1] = encoderButtons_;
-    for (uint8_t i = 0; i < 4; ++i) {
-        const int16_t delta = encoderDelta_[i] > 63 ? 63 : encoderDelta_[i] < -63 ? -63 : encoderDelta_[i];
-        data[2 + i] = delta + 64;
-        encoderDelta_[i] -= delta;
-    }
-    return true;
-}
-#endif
 
 void Panel::Activity::pulse(uint32_t now) {
     last = now;

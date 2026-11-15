@@ -905,24 +905,6 @@ int main() {
 
         if (now != nextPanel) {
             nextPanel = now;
-#ifdef MCDT_PANEL
-            panel.pollEncoders(now);
-            Port &panelPort = ports[0];
-            // Keep panel reports on USB cable 0 and outside instrument SysEx.
-            if (linkReady && !panelPort.parser.sysex() && !panelPort.dinFilter.pending() &&
-                panelPort.toHost.size() <= BRIDGE_DEVICE_BANK && panelPort.toHost.free() >= 20) {
-                uint8_t frame[] = {0xf0, 0x7d, 0x4d, 0x43, 0x4c, 0x02, 0x01,
-                                   0, 0, 64, 64, 64, 64, 0xf7};
-                if (panel.takeEncoderReport(now, frame + 7)) {
-                    MidiPacketizer message;
-                    for (uint8_t byte : frame) {
-                        message.accept(byte, 0, [&panelPort](const uint8_t *event) {
-                            panelPort.packet(event);
-                        });
-                    }
-                }
-            }
-#endif
             const uint8_t pressed = panel.takeTurboPresses(now);
             Panel::Status status[2];
             for (Port &port : ports) {

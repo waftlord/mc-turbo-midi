@@ -20,10 +20,6 @@ public:
     bool recoveryHeld() const { return recoveryHeld_; }
     void showUsbUpdate();
     uint8_t takeTurboPresses(uint32_t now);
-#ifdef MCDT_PANEL
-    void pollEncoders(uint32_t now);
-    bool takeEncoderReport(uint32_t now, uint8_t *data);
-#endif
     void midiIn(uint8_t port, uint32_t now);
     void midiOut(uint8_t port, uint32_t now);
     void service(uint32_t now, const Status *ports, bool usbReady);
@@ -64,15 +60,4 @@ private:
     bool recoveryHeld_ = false;
     uint8_t rawDown_ = 0;
     uint8_t stableDown_ = 0;
-#ifdef MCDT_PANEL
-    uint8_t encoderAB_ = 0;
-    uint8_t previousAB_ = 0;
-    uint8_t encoderButtons_ = 0;
-    uint8_t rawEncoderButtons_ = 0;
-    uint32_t encoderButtonsChangedAt_ = 0;
-    uint32_t lastEncoderReport_ = 0;
-    uint8_t reportedEncoderButtons_ = 0;
-    uint8_t encoderSequence_ = 0;
-    int16_t encoderDelta_[4] = {};
-#endif
 };

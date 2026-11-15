@@ -15,7 +15,6 @@ from zipfile import ZipFile, ZIP_DEFLATED
 ROOT = Path(__file__).resolve().parent.parent
 USB = "megacommand-diy-dual-atmega16u2-dfu.hex"
 MAIN = "megacommand-diy-dual-atmega2560-update.hex"
-ENCODERS = "megacommand-diy-mcdt-atmega2560-update.hex"
 AVR_PACKAGE = "platformio/toolchain-atmelavr@1.70300.191015"
 
 
@@ -34,18 +33,17 @@ def build(bundle: Path, output: Path, pio: str) -> None:
 
         pio_build = work / "pio"
         environment = {**os.environ, "PLATFORMIO_BUILD_DIR": str(pio_build)}
-        subprocess.run([pio, "run", "-e", "megacommand_diy", "-e", "megacommand_mcdt"],
+        subprocess.run([pio, "run", "-e", "megacommand_diy"],
                        cwd=snapshot, env=environment, check=True)
         images = snapshot / "build"
         images.mkdir()
         shutil.copyfile(pio_build / "megacommand_diy" / "firmware.hex", images / MAIN)
-        shutil.copyfile(pio_build / "megacommand_mcdt" / "firmware.hex", images / ENCODERS)
         subprocess.run([pio, "pkg", "exec", "-p", AVR_PACKAGE, "--", sys.executable,
                         "tools/build_usb_firmware.py", "--bundle", str(bundle)],
                        cwd=snapshot, env=environment, check=True)
 
         digests = {name: hashlib.sha256((images / name).read_bytes()).hexdigest()
-                   for name in (USB, MAIN, ENCODERS)}
+                   for name in (USB, MAIN)}
         manifest = "".join(f"{digest}  build/{name}\n" for name, digest in digests.items())
         (snapshot / "SHA256SUMS").write_text(manifest, encoding="ascii")
         image_ids = "-".join(digest[:8] for digest in digests.values())
