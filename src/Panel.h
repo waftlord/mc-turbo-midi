@@ -4,15 +4,34 @@
 
 class Panel {
 public:
+    enum class Fault : uint8_t { None, RxFull, Din, TxFull, Usb };
+
+    struct Status {
+        uint8_t speed;
+        uint8_t limit;
+        bool showLimit;
+        bool negotiating;
+        bool linkFailed;
+        Fault fault;
+    };
+
     void begin();
+    void dinReady();
     bool recoveryHeld() const { return recoveryHeld_; }
-    bool takeTurboPress(uint32_t now);
-    void midiIn(uint32_t now);
-    void midiOut(uint32_t now);
-    void service(uint32_t now, uint8_t speedCode, bool negotiating,
-                 bool failed = false);
+    void showUsbUpdate();
+    uint8_t takeTurboPresses(uint32_t now);
+#ifdef MCDT_PANEL
+    void pollEncoders(uint32_t now);
+    bool takeEncoderReport(uint32_t now, uint8_t *data);
+#endif
+    void midiIn(uint8_t port, uint32_t now);
+    void midiOut(uint8_t port, uint32_t now);
+    void service(uint32_t now, const Status *ports, bool usbReady);
+    void flushPriorityChunk();
 
 private:
+    enum class Screen : uint8_t { Starting, Ports, Recovery };
+
     struct Activity {
         uint32_t last = 0;
         bool active = false;
@@ -21,11 +40,11 @@ private:
         bool visible(uint32_t now);
     };
 
-    void draw(uint8_t speedCode, bool negotiating, bool failed,
-              bool input, bool output);
+    void drawPorts(const Status *ports, const uint8_t *activity, bool usbReady);
+    void drawProgress(uint8_t filled);
     void drawText(uint8_t x, uint8_t y, const char *text, uint8_t scale);
-    void drawIndicator(uint8_t x, bool active);
-    void pixel(uint8_t x, uint8_t y);
+    void drawIndicator(uint8_t x, uint8_t y, bool active);
+    void writePixels(uint8_t column, uint8_t page, const uint8_t *data, uint8_t count);
     void flushChunk();
 
     static constexpr uint8_t width = 128;
@@ -35,15 +54,25 @@ private:
     uint8_t frame_[frameBytes] = {};
     uint16_t nextByte_ = frameBytes;
     uint32_t lastButtonPoll_ = 0;
-    uint32_t rawChangedAt_ = 0;
-    Activity input_;
-    Activity output_;
-    uint8_t displayedSpeed_ = 0xFF;
-    bool displayedNegotiating_ = false;
-    bool displayedFailed_ = false;
-    bool displayedInput_ = false;
-    bool displayedOutput_ = false;
+    uint32_t lastDraw_ = 0;
+    uint32_t rawChangedAt_[4] = {};
+    Activity input_[2], output_[2];
+    uint16_t displayed_[2] = {0xffff, 0xffff};
+    Screen screen_ = Screen::Starting;
+    bool usbDisplayed_ = false;
+    bool fastFlush_ = false;
     bool recoveryHeld_ = false;
-    bool rawDown_ = false;
-    bool stableDown_ = false;
+    uint8_t rawDown_ = 0;
+    uint8_t stableDown_ = 0;
+#ifdef MCDT_PANEL
+    uint8_t encoderAB_ = 0;
+    uint8_t previousAB_ = 0;
+    uint8_t encoderButtons_ = 0;
+    uint8_t rawEncoderButtons_ = 0;
+    uint32_t encoderButtonsChangedAt_ = 0;
+    uint32_t lastEncoderReport_ = 0;
+    uint8_t reportedEncoderButtons_ = 0;
+    uint8_t encoderSequence_ = 0;
+    int16_t encoderDelta_[4] = {};
+#endif
 };

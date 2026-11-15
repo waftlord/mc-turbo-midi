@@ -1,4 +1,5 @@
 #include "TurboLink.h"
+#include "MidiStream.h"
 
 #include <string.h>
 
@@ -20,14 +21,12 @@ enum Command : uint8_t {
   SpeedResult2 = 0x17,
 };
 
-constexpr uint8_t lengths[] = {8, 12, 10, 8, 16, 16, 8, 8};
 constexpr uint8_t localCapabilities = capabilityBit(2) | capabilityBit(4) |
                                       capabilityBit(TurboLink::maximumSpeed);
-// Advertise 2x and 4x when responding to a negotiation request.
-constexpr uint8_t responderCapabilities = capabilityBit(2) | capabilityBit(4);
 constexpr uint16_t senseInterval = 150;
 constexpr uint16_t senseTimeout = 300;
 constexpr uint16_t recoveryInterval = 350;
+constexpr uint16_t restartRetryInterval = 1200;
 constexpr uint8_t settlingInterval = 10;
 
 uint8_t highestSpeed(uint8_t mask, uint8_t limit) {
@@ -43,15 +42,18 @@ uint8_t allowedMask(uint8_t limit) {
 }
 
 TurboLink::TurboLink(bool (*sendDin)(const uint8_t*, uint8_t), bool (*dinTxIdle)(),
-                     void (*setDinRate)(uint8_t), void (*notifySpeed)(uint8_t))
+                     void (*setDinRate)(uint8_t), void (*notifySpeed)(uint8_t),
+                     bool (*fastTestAvailable)())
     : sendDin_(sendDin), dinTxIdle_(dinTxIdle), setDinRate_(setDinRate),
-      notifySpeed_(notifySpeed) {}
+      notifySpeed_(notifySpeed), fastTestAvailable_(fastTestAvailable) {}
 
 bool TurboLink::busy() const {
   return state_ != State::Normal && state_ != State::Active;
 }
 
 void TurboLink::enter(State state, uint32_t now) {
+  if (state == State::SendRequest) initiator_ = true;
+  if (state == State::SendAnswer) initiator_ = false;
   state_ = state;
   stateSince_ = now;
   awaitingFrame_ = false;
@@ -69,7 +71,13 @@ void TurboLink::publishSpeed(uint8_t speedCode, bool force) {
   notifySpeed_(speed_);
 }
 
-void TurboLink::stop(uint32_t now, uint8_t restartLimit, bool failed) {
+void TurboLink::recover(uint32_t now, uint16_t quietMs) {
+  recoveryDrained_ = false;
+  recoveryQuietMs_ = quietMs;
+  enter(State::Recovering, now);
+}
+
+void TurboLink::stop(uint32_t now, uint8_t restartLimit, bool failed, bool waitForPeer) {
   failed_ = failed;
   restartLimit_ = restartLimit;
 
@@ -80,8 +88,7 @@ void TurboLink::stop(uint32_t now, uint8_t restartLimit, bool failed) {
                                    state_ == State::WaitAck ||
                                    state_ == State::DrainAck;
   if (peerMayHaveSwitched) {
-    recoveryDrained_ = false;
-    enter(State::Recovering, now);
+    recover(now, waitForPeer ? recoveryInterval : 0);
   } else if (restartLimit_ > normalSpeed) {
     attemptLimit_ = restartLimit_;
     enter(State::SendRequest, now);
@@ -128,8 +135,8 @@ void TurboLink::setLimit(uint8_t speedCode, uint32_t now) {
   } else if (state_ == State::Recovering && restartLimit_ == 0) {
     restartLimit_ = hostLimit_;
     failed_ = false;
-  } else if (hostLimit_ != previousLimit &&
-             (speed_ != hostLimit_ || busy())) {
+  } else if ((hostLimit_ != previousLimit && busy()) ||
+             (!busy() && speed_ != hostLimit_)) {
     stop(now, hostLimit_, false);
   } else if (!busy()) {
     publishSpeed(speed_, true);
@@ -150,10 +157,13 @@ bool TurboLink::sendCommand(uint8_t command, const uint8_t* payload,
 void TurboLink::chooseSpeeds(const uint8_t* answer, uint32_t now) {
   const uint8_t common = answer[0] & allowedMask(attemptLimit_);
   const uint8_t certified = answer[2] & common;
-  const uint8_t highestTest = highestSpeed(common, attemptLimit_);
+  const uint8_t highestTest = attemptLimit_ == maximumSpeed &&
+                              (common & capabilityBit(maximumSpeed)) &&
+                              (answer[0] & capabilityBit(fastTestSpeed))
+      ? fastTestSpeed : highestSpeed(common, attemptLimit_);
 
   // An equal pair requires certification. A faster common test rate can
-  // permit an uncertified final rate while keeping both within the cap.
+  // qualify an uncertified final rate. 10× is available only for tests.
   for (uint8_t candidate = attemptLimit_; candidate > normalSpeed; --candidate) {
     const uint8_t bit = capabilityBit(candidate);
     if (!(common & bit)) continue;
@@ -172,8 +182,8 @@ bool TurboLink::receive(const uint8_t* frame, uint8_t size, uint32_t now) {
   }
   const uint8_t command = frame[sizeof(header)];
   if (command < SpeedRequest || command > SpeedResult2) return false;
-  if (size != lengths[command - SpeedRequest] || frame[size - 1] != 0xF7) {
-    return true;
+  if (size != turboDinFrameLength(command) || frame[size - 1] != 0xF7) {
+    return false;
   }
   const uint8_t* payload = frame + sizeof(header) + 1;
 
@@ -186,14 +196,17 @@ bool TurboLink::receive(const uint8_t* frame, uint8_t size, uint32_t now) {
       }
       break;
     case SpeedAnswer:
-      if (state_ == State::WaitAnswer) chooseSpeeds(payload, now);
+      if (state_ == State::WaitAnswer) {
+        retryRequest_ = false;
+        chooseSpeeds(payload, now);
+      }
       break;
     case SpeedNegotiation:
       if (state_ != State::WaitNegotiation) break;
       if (payload[0] == normalSpeed && payload[1] == normalSpeed) {
-        enter(State::Normal, now);
+        stop(now, 0, false);
       } else if (payload[1] > normalSpeed && payload[0] >= payload[1] &&
-                 payload[0] <= hostLimit_ &&
+                 payload[0] <= fastTestSpeed && payload[1] <= hostLimit_ &&
                  (responderMask_ & capabilityBit(payload[0])) &&
                  (responderMask_ & capabilityBit(payload[1]))) {
         testSpeed_ = payload[0];
@@ -255,7 +268,14 @@ uint8_t TurboLink::byteTimeout() const {
 }
 
 void TurboLink::observeDinByte(uint8_t byte, uint32_t now) {
-  lastDinByte_ = now;
+  noteDinActivity(now);
+  if (state_ == State::WaitPeer && byte >= 0x80 && byte != 0xf7) {
+    failed_ = false;
+    retryRequest_ = false;
+    enter(State::Active, now);
+    publishSpeed(finalSpeed_, true);
+    return;
+  }
   if (!byteTimeout() || byte >= 0xF8) return;
   if (byte == 0xF0) awaitingFrame_ = true;
   if (!awaitingFrame_) return;
@@ -263,8 +283,28 @@ void TurboLink::observeDinByte(uint8_t byte, uint32_t now) {
   if (byte >= 0x80 && byte != 0xF0) awaitingFrame_ = false;
 }
 
-void TurboLink::reportTransportError(uint32_t now) {
-  if (!recovering()) stop(now, 0, true);
+bool TurboLink::reportTransportError(uint32_t now, bool framingOnly) {
+  if (framingOnly && ((state_ == State::WaitAnswer && retryRequest_) ||
+      state_ == State::WaitAck || state_ == State::Settling || state_ == State::WaitPeer)) {
+    // Old-rate bytes can arrive while the peer changes its UART. Discard
+    // the partial frame and let the ordinary reply deadline apply.
+    awaitingFrame_ = false;
+    return true;
+  }
+  if (state_ == State::WaitResult1 || state_ == State::WaitResult2 ||
+      (state_ == State::SendTest2 && wireSpeed_ == fastTestSpeed)) {
+    failNegotiation(now, true);
+    return framingOnly;
+  }
+  if (framingOnly && (state_ == State::WaitTest1 || state_ == State::WaitTest2 ||
+      state_ == State::SendResult1 || state_ == State::SendResult2 ||
+      state_ == State::DrainResult2)) {
+    failNegotiation(now, false);
+    return true;
+  } else if (!recovering()) {
+    stop(now, 0, true);
+  }
+  return false;
 }
 
 void TurboLink::tick(uint32_t now) {
@@ -297,8 +337,12 @@ void TurboLink::tick(uint32_t now) {
       else if (elapsed > 45) failNegotiation(now, true);
       return;
     case State::SendAnswer: {
-      responderMask_ = allowedMask(hostLimit_) & responderCapabilities;
-      const uint8_t response[] = {responderMask_, 0, responderMask_, 0};
+      const uint8_t certified = allowedMask(hostLimit_);
+      responderMask_ = certified;
+      if (hostLimit_ == maximumSpeed && fastTestAvailable_ && fastTestAvailable_()) {
+        responderMask_ |= fastTestCapability;
+      }
+      const uint8_t response[] = {responderMask_, 0, certified, 0};
       if (sendCommand(SpeedAnswer, response, sizeof(response))) {
         enter(State::WaitNegotiation, now);
       } else if (elapsed > 23) {
@@ -337,17 +381,22 @@ void TurboLink::tick(uint32_t now) {
     case State::Settling:
       if (elapsed >= settlingInterval && sendDin_(&activeSense, 1)) {
         lastSenseSent_ = now;
-        lastDinByte_ = now;
-        failed_ = false;
-        enter(State::Active, now);
-        publishSpeed(finalSpeed_, true);
+        // Confirm the peer has reached the final baud rate before reporting it.
+        enter(State::WaitPeer, now);
       } else if (elapsed > 45) {
         failNegotiation(now, false);
       }
       return;
+    case State::WaitPeer:
+      if (elapsed > senseTimeout) {
+        failNegotiation(now, initiator_);
+      } else if (now - lastSenseSent_ >= senseInterval && sendDin_(&activeSense, 1)) {
+        lastSenseSent_ = now;
+      }
+      return;
     case State::Active:
       if (now - lastDinByte_ > senseTimeout) {
-        stop(now, 0, true);
+        stop(now, 0, true, false);
       } else if (now - lastSenseSent_ >= senseInterval && sendDin_(&activeSense, 1)) {
         lastSenseSent_ = now;
       }
@@ -355,18 +404,24 @@ void TurboLink::tick(uint32_t now) {
     case State::Recovering:
       if (!recoveryDrained_) {
         if (!dinTxIdle_()) return;
-        setWireSpeed(normalSpeed);
-        publishSpeed(normalSpeed);
+        // Let the peer's Active Sensing timeout expire before switching
+        // the UART. It may still be transmitting at the negotiated rate.
         stateSince_ = now;
         recoveryDrained_ = true;
-      } else if (elapsed >= recoveryInterval) {
-        if (restartLimit_ > normalSpeed) {
-          attemptLimit_ = restartLimit_;
-          enter(State::SendRequest, now);
-        } else {
-          enter(State::Normal, now);
-          publishSpeed(normalSpeed, true);
-        }
+        if (recoveryQuietMs_) return;
+      } else if (elapsed < recoveryQuietMs_) {
+        return;
+      }
+      // Some peers miss the first 1× request even after the Active Sensing
+      // guard. Allow one retry on the next handshake after a settled link.
+      if (speed_ != normalSpeed) retryRequest_ = true;
+      setWireSpeed(normalSpeed);
+      publishSpeed(normalSpeed, true);
+      if (restartLimit_ > normalSpeed) {
+        attemptLimit_ = restartLimit_;
+        enter(State::SendRequest, now);
+      } else {
+        enter(State::Normal, now);
       }
       return;
     default:
@@ -377,8 +432,15 @@ void TurboLink::tick(uint32_t now) {
   if (awaitingFrame_ && now - lastFrameByte_ <= timeout && elapsed <= 400) return;
   if (!awaitingFrame_ && elapsed <= timeout) return;
 
-  if (state_ == State::WaitNegotiation) {
-    enter(State::Normal, now);
+  if (state_ == State::WaitAnswer && retryRequest_) {
+    retryRequest_ = false;
+    restartLimit_ = attemptLimit_;
+    // Give a slow peer time to finish falling back to 1× before resending.
+    recover(now, restartRetryInterval);
+  } else if (state_ == State::WaitNegotiation) {
+    // Both ends can answer at the same time and then wait for the other to
+    // choose a rate. Publish the resulting 1× state so a host can retry.
+    stop(now, 0, false);
   } else {
     const bool retry = state_ == State::WaitAck || state_ == State::WaitResult1 ||
                        state_ == State::WaitResult2;

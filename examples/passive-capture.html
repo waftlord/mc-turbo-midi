@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passive MIDI SysEx capture</title>
+<style>
+  body { font: 1rem/1.5 system-ui, sans-serif; margin: 2rem auto; padding: 0 1rem; max-width: 44rem; }
+  fieldset { margin: 1rem 0; min-width: 0; }
+  select { max-width: 100%; }
+</style>
+<main>
+  <h1>Passive MIDI SysEx capture</h1>
+  <p>Enable MIDI, choose the input for each DIN pair, and arm the capture. Start the dump from your instrument, then stop and save the raw <code>.syx</code> file. If names are unclear, send a small dump from one instrument at a time to confirm the route.</p>
+  <button id="enable" type="button">Enable MIDI inputs</button>
+  <p id="access-status" role="status"></p>
+  <div id="routes"></div>
+  <p>Files contain complete SysEx messages in receive order. Check them against the expected dump, byte count, and checksum. This page sends no MIDI and does not measure DIN timing.</p>
+</main>
+<template id="route">
+  <fieldset>
+    <legend></legend>
+    <label>MIDI input <select><option value="">Select an input</option></select></label>
+    <p>
+      <button class="arm" type="button" disabled>Arm</button>
+      <button class="stop" type="button" disabled>Stop</button>
+      <button class="save" type="button" disabled>Save .syx</button>
+    </p>
+    <p class="status" role="status">Idle</p>
+  </fieldset>
+</template>
+<script type="module" src="./passive-capture.mjs"></script>
+</html>

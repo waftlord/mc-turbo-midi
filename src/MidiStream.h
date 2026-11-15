@@ -49,6 +49,11 @@ private:
 
 enum class MidiSide : uint8_t { Usb, Din };
 
+static inline uint8_t turboDinFrameLength(uint8_t command) {
+    static constexpr uint8_t lengths[] = {8, 12, 10, 8, 16, 16, 8, 8};
+    return command >= 0x10 && command <= 0x17 ? lengths[command - 0x10] : 0;
+}
+
 // Buffer short control frames while forwarding other MIDI messages.
 class ControlFilter {
 public:
@@ -81,11 +86,7 @@ public:
         bytes_[size_++] = byte;
         lastByte_ = now;
         if (byte == 0xF7) {
-            const bool mclMode = side_ == MidiSide::Din && bytes_[1] == 0x7D;
-            if (mclMode && size_ == 8) {
-                // This is also a private command on the USB chip.
-                size_ = 0;
-            } else if (!mclMode && size_ >= 8) {
+            if (size_ >= 8 && size_ == controlLength()) {
                 control(bytes_, size_);
                 size_ = 0;
             } else {
@@ -107,6 +108,16 @@ public:
     void clear() { size_ = 0; }
 
 private:
+    uint8_t controlLength() const {
+        const uint8_t command = bytes_[6];
+        if (side_ == MidiSide::Din) return turboDinFrameLength(command);
+        if (bytes_[1] == 0x7D) return command == 1 || command == 3 ? 8 : 0;
+        if (command == 1) return 8;
+        if (command != 3) return 0;
+        if (size_ >= 8 && bytes_[7] > 11) return 0;
+        return 9;
+    }
+
     template <typename Forward>
     void flush(Forward forward) {
         for (uint8_t i = 0; i < size_; ++i) {
@@ -116,9 +127,10 @@ private:
     }
 
     bool matchesPrefix(uint8_t byte) const {
-        if (side_ == MidiSide::Din && bytes_[1] == 0x7D) {
+        if (size_ >= 2 && bytes_[1] == 0x7D) {
+            if (side_ != MidiSide::Usb) return false;
             const uint8_t prefix[] = {0xF0, 0x7D, 0x4D, 0x43, 0x4C, 0x01};
-            return size_ <= sizeof(prefix) ? byte == prefix[size_ - 1] : size_ == 7;
+            return size_ <= sizeof(prefix) ? byte == prefix[size_ - 1] : size_ < controlLength();
         }
         const uint8_t prefix[] = {0xF0, 0x00, 0x20, 0x3C,
                                   side_ == MidiSide::Usb ? uint8_t{0x04} : uint8_t{0x00},
@@ -126,11 +138,7 @@ private:
         if (size_ <= sizeof(prefix)) {
             return byte == prefix[size_ - 1];
         }
-        if (size_ == sizeof(prefix) + 1) {
-            return side_ == MidiSide::Usb ? byte == 0x01 || byte == 0x03
-                                          : (byte >= 0x10 && byte <= 0x17) || byte == 0x20;
-        }
-        return true;
+        return size_ < controlLength();
     }
 
     MidiSide side_;

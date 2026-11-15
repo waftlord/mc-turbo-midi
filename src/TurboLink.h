@@ -8,19 +8,28 @@ class TurboLink {
  public:
   static constexpr uint8_t normalSpeed = 1;
   static constexpr uint8_t maximumSpeed = 7;
+  static constexpr uint8_t fastTestSpeed = 8;
+  static constexpr uint8_t fastTestCapability = 1 << (fastTestSpeed - 2);
 
   TurboLink(bool (*sendDin)(const uint8_t*, uint8_t), bool (*dinTxIdle)(),
-            void (*setDinRate)(uint8_t), void (*notifySpeed)(uint8_t));
+            void (*setDinRate)(uint8_t), void (*notifySpeed)(uint8_t),
+            bool (*fastTestAvailable)() = nullptr);
 
   void toggle(uint32_t now);
   void setLimit(uint8_t speedCode, uint32_t now);
   bool receive(const uint8_t* frame, uint8_t size, uint32_t now);
   void observeDinByte(uint8_t byte, uint32_t now);
-  void reportTransportError(uint32_t now);
+  // Buffered data can refresh liveness without confirming the final baud rate.
+  void noteDinActivity(uint32_t now) { lastDinByte_ = now; }
+  // True when a framing error is contained within negotiation.
+  bool reportTransportError(uint32_t now, bool framingOnly = false);
   void tick(uint32_t now);
 
   // During a transition, speed is the last settled rate reported to the host.
   uint8_t speed() const { return speed_; }
+  uint8_t limit() const { return hostLimit_; }
+  bool mayUseFastTest() const { return attemptLimit_ == maximumSpeed; }
+  bool selectedFastTest() const { return testSpeed_ == fastTestSpeed; }
   bool busy() const;
   bool pausePayload() const { return busy() && state_ != State::WaitNegotiation; }
   bool recovering() const { return state_ == State::Recovering; }
@@ -47,13 +56,15 @@ class TurboLink {
     SendResult2,
     DrainResult2,
     Settling,
+    WaitPeer,
     Active,
     Recovering,
   };
 
   void enter(State state, uint32_t now);
-  void stop(uint32_t now, uint8_t restartLimit, bool failed);
+  void stop(uint32_t now, uint8_t restartLimit, bool failed, bool waitForPeer = true);
   void failNegotiation(uint32_t now, bool retry);
+  void recover(uint32_t now, uint16_t quietMs);
   void setWireSpeed(uint8_t speedCode);
   void publishSpeed(uint8_t speedCode, bool force = false);
   void chooseSpeeds(const uint8_t* answer, uint32_t now);
@@ -65,6 +76,7 @@ class TurboLink {
   bool (*dinTxIdle_)();
   void (*setDinRate_)(uint8_t);
   void (*notifySpeed_)(uint8_t);
+  bool (*fastTestAvailable_)();
 
   State state_ = State::Normal;
   uint32_t stateSince_ = 0;
@@ -80,6 +92,9 @@ class TurboLink {
   uint8_t speed_ = normalSpeed;
   uint8_t responderMask_ = 0;
   bool awaitingFrame_ = false;
+  bool initiator_ = false;
   bool recoveryDrained_ = false;
+  uint16_t recoveryQuietMs_ = 0;
+  bool retryRequest_ = false;
   bool failed_ = false;
 };

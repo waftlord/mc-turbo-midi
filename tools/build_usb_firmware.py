@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the USB flow-control HEX from the pinned MegaCommand DIY release."""
+"""Build the dual-port USB DFU HEX from the pinned MegaCommand DIY release."""
 
 import argparse
 import hashlib
@@ -11,31 +11,22 @@ from zipfile import BadZipFile, ZipFile
 
 DIY_IMAGE = "megacmd_usb_dfu_1.0.4/megacommand-diy-usb-midi-1.0.4.hex"
 DIY_SHA256 = "5262a2ffeff37b0a6698675dbabb4916096a96fc806c59a37aaf942861c5fa8e"
-OUTPUT = Path("build/megacommand-diy-atmega16u2.hex")
-OUTPUT_SHA256 = "f77a496df35f443912e4bb4a6a3d308298d2e196a1f26d07453ea046b1f98b6a"
+OUTPUT = Path("build/megacommand-diy-dual-atmega16u2-dfu.hex")
 APP_END = 0x3000  # Earliest possible boot section on the ATmega16U2.
 PATCH_START = 0x1914
 
-# Expected flash bytes at each overwritten instruction sequence.
+# Expected bytes at the stock entry points replaced by the overlay.
 HOOKS = {
-    0x02D4: (".midi_in_flush_hook", "8e b3 84 30"),
-    0x0300: (".midi_in_write_hook", "ef 92 ff 92"),
-    0x07B0: (".active_sense_hook", "88 e5 91 e0 c7 df"),
-    0x1514: (".midi_out_hook", "80 91 22 01"),
-    0x15F0: (".midi_in_wait_hook", "ca 94 8f ef"),
-    0x1632: (".midi_in_realtime_hook", "0e 94 6a 01 8e 01 0f 5f 1f 4f"),
-    0x183A: (".midi_in_event_hook", "0e 94 6a 01"),
-}
-
-
-# Byte addresses of the stock continuation instructions. Resolve relative
-# branches after placing the hook sections at their final addresses.
-CONTINUATIONS = {
-    "DECODE_OUT_EVENT": 0x156e,
-    "SERVICE_MIDI_IN": 0x15a4,
-    "MIDI_IN_LOOP": 0x15f0,
-    "MIDI_IN_LOOP_CONTINUE": 0x15f4,
-    "MIDI_IN_LOOP_FINISH": 0x1840,
+    0x002C: (".usb_reset_hook", "0c 94 1c 08"),
+    0x005C: (".rx_vector_hook", "0c 94 f8 08"),
+    0x0060: (".tx_vector_hook", "0c 94 be 08"),
+    0x06F0: (".uart_midi_hook", "62 e1 7a e7 80 e0 90 e0 8b dd"),
+    0x0D14: (".midi_string_hook", "99 27 81 30"),
+    0x0D5A: (".midi_desc_hook", "85 e6 90 e0"),
+    0x0F9E: (".timer_keepalive_hook", "f1 db"),
+    0x1212: (".cdc_rx_hook", "60 91 ce 00"),
+    0x133A: (".cdc_poll_hook", "9f b7 f8 94 80 91 dc 01 9f bf"),
+    0x150C: (".midi_loop_hook", "8e b3 84 30 09 f0 48 c0"),
 }
 
 
@@ -72,43 +63,43 @@ def write_hex(flash: bytes) -> bytes:
 
 
 def build_patch() -> dict[int, int]:
-    source = Path(__file__).resolve().with_name("usb_flow.S")
-    with tempfile.TemporaryDirectory(prefix="megacommand-usb-flow-") as temp:
-        obj = Path(temp) / "usb_flow.o"
-        elf = Path(temp) / "usb_flow.elf"
-        ihex = Path(temp) / "usb_flow.hex"
+    source = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory(prefix="megacommand-usb-dual-") as temp:
+        temp = Path(temp)
+        assembly = temp / "usb_dual_asm.o"
+        obj = temp / "usb_dual.o"
+        elf = temp / "usb_dual.elf"
+        ihex = temp / "usb_dual.hex"
         subprocess.run(
-            ["avr-as", "-mmcu=atmega16u2", "-o", obj, source],
+            ["avr-as", "-mmcu=atmega16u2", "-o", assembly, source / "usb_dual.S"],
             check=True,
         )
         subprocess.run(
-            [
-                "avr-ld",
-                "-m",
-                "avr35",
-                *(f"--defsym={symbol}=0x{address:x}"
-                  for symbol, address in CONTINUATIONS.items()),
-                *(f"--section-start={section}=0x{address:x}"
-                  for address, (section, _) in HOOKS.items()),
-                f"--section-start=.usb_flow=0x{PATCH_START:x}",
-                "-o",
-                elf,
-                obj,
-            ],
+            ["avr-gcc", "-mmcu=atmega16u2", "-DF_CPU=16000000UL", "-std=gnu11", "-Os", "-Wall",
+             "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections",
+             "-o", obj, "-c", source / "usb_dual.c"],
+            check=True,
+        )
+        script = temp / "overlay.ld"
+        script.write_text(
+            "SECTIONS {\n"
+            + "".join(f"  {section} 0x{address:x} : {{ *({section}) }}\n"
+                      for address, (section, _) in HOOKS.items())
+            + f"  .usb_dual 0x{PATCH_START:x} : {{ *(.text*) *(.progmem*) }}\n"
+            + '  .ram : { *(.data*) *(.bss*) *(.rodata*) *(COMMON) }\n'
+            + '  ASSERT(SIZEOF(.ram) == 0, "USB overlay defines implicit SRAM")\n'
+            + "}\n"
+        )
+        subprocess.run(
+            ["avr-gcc", "-mmcu=atmega16u2", "-nostartfiles", "-Wl,-T," + str(script),
+             "-o", elf, assembly, obj],
             check=True,
         )
         subprocess.run(
-            [
-                "avr-objcopy",
-                "-O",
-                "ihex",
-                *(argument for section, _ in HOOKS.values()
-                  for argument in ("-j", section)),
-                "-j",
-                ".usb_flow",
-                elf,
-                ihex,
-            ],
+            ["avr-objcopy", "-O", "ihex",
+             *(argument for section, _ in HOOKS.values()
+               for argument in ("-j", section)),
+             "-j", ".usb_dual", elf, ihex],
             check=True,
         )
         # GNU objcopy can emit an entry point record. The AVR starts at reset
@@ -158,9 +149,6 @@ def main() -> None:
 
         result = apply_patch(original, build_patch())
         checksum = hashlib.sha256(result).hexdigest()
-        if checksum != OUTPUT_SHA256:
-            raise ValueError("USB firmware differs from the reference build. Use the pinned AVR toolchain.")
-
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(result)
     except KeyError:

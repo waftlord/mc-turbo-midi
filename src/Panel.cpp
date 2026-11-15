@@ -10,13 +10,28 @@ namespace {
 constexpr uint8_t shiftData = _BV(PL0);
 constexpr uint8_t shiftLoad = _BV(PL1);
 constexpr uint8_t shiftClock = _BV(PL2);
-constexpr uint8_t pageButton = _BV(5); // MCL Buttons.BUTTON2, active low.
+constexpr uint8_t pageButton = _BV(5); // MCL Buttons.BUTTON2
+constexpr uint8_t shiftButton = _BV(6); // MCL Buttons.BUTTON3
+constexpr uint8_t saveButton = _BV(4);
+constexpr uint8_t loadButton = _BV(7);
 constexpr uint8_t oledSelect = _BV(PL7);
 constexpr uint8_t oledData = _BV(PL5);
 constexpr uint8_t oledReset = _BV(PD7);
-constexpr uint8_t turboLed = _BV(PE5);
+constexpr uint8_t turboLed[] = {_BV(PE5), _BV(PE4)};
 constexpr uint8_t activityMs = 100;
 constexpr uint8_t debounceMs = 16;
+constexpr uint8_t splashMs = 200;
+constexpr uint8_t progressX = 28;
+constexpr uint8_t progressWidth = 72;
+constexpr uint8_t progressInterior = progressWidth - 2;
+constexpr uint8_t progressPage = 3;
+constexpr uint16_t portStatusMask = 0x7030; // Link and fault bits.
+
+// Map four source pixels to eight pixels for the large OLED text.
+constexpr uint8_t doubledNibble[] PROGMEM = {
+    0x00, 0x03, 0x0c, 0x0f, 0x30, 0x33, 0x3c, 0x3f,
+    0xc0, 0xc3, 0xcc, 0xcf, 0xf0, 0xf3, 0xfc, 0xff,
+};
 
 // Adapted from the MCL fork of Adafruit SSD1305. See THIRD_PARTY_NOTICES.md.
 constexpr uint8_t oledInit[] PROGMEM = {
@@ -58,6 +73,7 @@ constexpr Glyph glyphs[] PROGMEM = {
     {'B', {0x7F, 0x49, 0x49, 0x49, 0x36}},
     {'D', {0x7F, 0x41, 0x41, 0x22, 0x1C}},
     {'E', {0x7F, 0x49, 0x49, 0x49, 0x41}},
+    {'F', {0x7F, 0x09, 0x09, 0x09, 0x01}},
     {'I', {0x00, 0x41, 0x7F, 0x41, 0x00}},
     {'K', {0x7F, 0x08, 0x14, 0x22, 0x41}},
     {'L', {0x7F, 0x40, 0x40, 0x40, 0x40}},
@@ -69,22 +85,32 @@ constexpr Glyph glyphs[] PROGMEM = {
     {'S', {0x46, 0x49, 0x49, 0x49, 0x31}},
     {'T', {0x01, 0x01, 0x7F, 0x01, 0x01}},
     {'U', {0x3F, 0x40, 0x40, 0x40, 0x3F}},
+    {'W', {0x3F, 0x40, 0x38, 0x40, 0x3F}},
     {'X', {0x63, 0x14, 0x08, 0x14, 0x63}},
 };
 
-bool pageDown() {
-    PORTL &= ~shiftLoad;
-    PORTL |= shiftLoad;
-
-    // The first eight bits contain the panel buttons. The encoder signals
-    // occupy the following eight bits and can be left unread.
-    uint8_t buttons = 0;
+uint8_t shiftReadByte() {
+    uint8_t value = 0;
     for (uint8_t i = 0; i < 8; ++i) {
-        buttons = static_cast<uint8_t>((buttons << 1) | (PINL & shiftData));
+        value = static_cast<uint8_t>((value << 1) | (PINL & shiftData));
         PORTL &= ~shiftClock;
         PORTL |= shiftClock;
     }
-    return !(buttons & pageButton);
+    return value;
+}
+
+void latchPanel() {
+    PORTL &= ~shiftLoad;
+    PORTL |= shiftLoad;
+}
+
+uint8_t pressedButtons() {
+    latchPanel();
+    const uint8_t buttons = shiftReadByte();
+    return static_cast<uint8_t>((!(buttons & pageButton) ? 1 : 0) |
+                                (!(buttons & shiftButton) ? 2 : 0) |
+                                (!(buttons & saveButton) ? 4 : 0) |
+                                (!(buttons & loadButton) ? 8 : 0));
 }
 
 void spiByte(uint8_t data) {
@@ -119,10 +145,10 @@ void Panel::begin() {
            & ~shiftData;
     PORTD |= _BV(PD4) | oledReset;
     DDRD |= _BV(PD4) | oledReset;
-    PORTE &= ~turboLed;
-    DDRE |= turboLed;
+    PORTE &= ~(turboLed[0] | turboLed[1]);
+    DDRE |= turboLed[0] | turboLed[1];
 
-    const bool heldBeforeReset = pageDown();
+    const bool heldBeforeReset = pressedButtons() & 1;
 
     // Keep the SD card deselected. PB0 is also the AVR hardware SPI SS pin.
     PORTB |= _BV(PB0);
@@ -145,26 +171,110 @@ void Panel::begin() {
         PORTL |= oledSelect;
     }
 
-    rawDown_ = stableDown_ = pageDown();
-    recoveryHeld_ = heldBeforeReset && stableDown_;
+    rawDown_ = stableDown_ = pressedButtons();
+#ifdef MCDT_PANEL
+    latchPanel();
+    encoderButtons_ = rawEncoderButtons_ = static_cast<uint8_t>(~shiftReadByte()) & 0x0f;
+    encoderAB_ = previousAB_ = shiftReadByte();
+#endif
+    recoveryHeld_ = heldBeforeReset && (stableDown_ & 1);
+    if (recoveryHeld_) {
+        showUsbUpdate();
+    } else {
+        drawText(10, 0, "MCL TURBO", 2);
+        drawProgress(progressInterior / 3);
+        nextByte_ = 0;
+    }
+    // Complete the first frame before configuring UARTs, then keep later
+    // transfers short enough for the main loop to service MIDI between them.
+    while (nextByte_ < frameBytes) flushChunk();
+    fastFlush_ = false;
 }
 
-bool Panel::takeTurboPress(uint32_t now) {
-    if (now - lastButtonPoll_ < 2) {
-        return false;
-    }
-    lastButtonPoll_ = now;
-    const bool down = pageDown();
-    if (down != rawDown_) {
-        rawDown_ = down;
-        rawChangedAt_ = now;
-    }
-    if (rawDown_ == stableDown_ || now - rawChangedAt_ < debounceMs) {
-        return false;
-    }
-    stableDown_ = rawDown_;
-    return stableDown_;
+void Panel::dinReady() {
+    if (screen_ != Screen::Starting) return;
+    drawProgress(2 * progressInterior / 3);
+    nextByte_ = progressPage * width;
+    fastFlush_ = true;
 }
+
+void Panel::showUsbUpdate() {
+    if (screen_ == Screen::Recovery) return;
+    screen_ = Screen::Recovery;
+    PORTE &= ~(turboLed[0] | turboLed[1]);
+    memset(frame_, 0, sizeof(frame_));
+    drawText(4, 8, "USB UPDATE", 2);
+    nextByte_ = 0;
+    fastFlush_ = true;
+}
+
+uint8_t Panel::takeTurboPresses(uint32_t now) {
+    if (now - lastButtonPoll_ < 2) return 0;
+    lastButtonPoll_ = now;
+    const uint8_t down = pressedButtons();
+    uint8_t pressed = 0;
+    for (uint8_t i = 0; i < 4; ++i) {
+        const uint8_t mask = 1 << i;
+        if ((down ^ rawDown_) & mask) rawChangedAt_[i] = now;
+        if (((down ^ stableDown_) & mask) && now - rawChangedAt_[i] >= debounceMs) {
+            stableDown_ ^= mask;
+            pressed |= down & mask;
+        }
+    }
+    rawDown_ = down;
+    return pressed;
+}
+
+#ifdef MCDT_PANEL
+void Panel::pollEncoders(uint32_t now) {
+    latchPanel();
+    const uint8_t buttons = static_cast<uint8_t>(~shiftReadByte()) & 0x0f;
+    const uint8_t inputs = shiftReadByte();
+    if (buttons != rawEncoderButtons_) {
+        rawEncoderButtons_ = buttons;
+        encoderButtonsChangedAt_ = now;
+    }
+    if (now - encoderButtonsChangedAt_ >= debounceMs) encoderButtons_ = buttons;
+
+    // Match the half-step transitions in MCL's AVR GUI hardware decoder.
+    for (uint8_t i = 0; i < 4; ++i) {
+        const uint8_t shift = i * 2;
+        const uint8_t old = (encoderAB_ >> shift) & 3;
+        const uint8_t next = (inputs >> shift) & 3;
+        if (old == next) continue;
+        const uint8_t mask = 3 << shift;
+        const uint8_t previous = (previousAB_ >> shift) & 3;
+        previousAB_ = (previousAB_ & ~mask) | (old << shift);
+        if ((previous == 0 && old == 1 && next == 3) ||
+            (previous == 3 && old == 2 && next == 0)) {
+            if (encoderDelta_[i] < 32767) ++encoderDelta_[i];
+        } else if ((previous == 0 && old == 2 && next == 3) ||
+                   (previous == 3 && old == 1 && next == 0)) {
+            if (encoderDelta_[i] > -32767) --encoderDelta_[i];
+        }
+    }
+    encoderAB_ = inputs;
+}
+
+bool Panel::takeEncoderReport(uint32_t now, uint8_t *data) {
+    const uint32_t elapsed = now - lastEncoderReport_;
+    if (elapsed < 8) return false;
+    bool changed = encoderButtons_ != reportedEncoderButtons_;
+    for (uint8_t i = 0; i < 4; ++i) changed |= encoderDelta_[i] != 0;
+    if (!changed && elapsed < 500) return false;
+
+    lastEncoderReport_ = now;
+    reportedEncoderButtons_ = encoderButtons_;
+    data[0] = encoderSequence_++ & 0x7f;
+    data[1] = encoderButtons_;
+    for (uint8_t i = 0; i < 4; ++i) {
+        const int16_t delta = encoderDelta_[i] > 63 ? 63 : encoderDelta_[i] < -63 ? -63 : encoderDelta_[i];
+        data[2 + i] = delta + 64;
+        encoderDelta_[i] -= delta;
+    }
+    return true;
+}
+#endif
 
 void Panel::Activity::pulse(uint32_t now) {
     last = now;
@@ -178,76 +288,126 @@ bool Panel::Activity::visible(uint32_t now) {
     return active;
 }
 
-void Panel::midiIn(uint32_t now) { input_.pulse(now); }
-void Panel::midiOut(uint32_t now) { output_.pulse(now); }
+void Panel::midiIn(uint8_t port, uint32_t now) { input_[port].pulse(now); }
+void Panel::midiOut(uint8_t port, uint32_t now) { output_[port].pulse(now); }
 
-void Panel::service(uint32_t now, uint8_t speedCode, bool negotiating,
-                    bool failed) {
-    const bool input = input_.visible(now);
-    const bool output = output_.visible(now);
-    if (nextByte_ == frameBytes &&
-        (speedCode != displayedSpeed_ || negotiating != displayedNegotiating_ ||
-         failed != displayedFailed_ || input != displayedInput_ ||
-         output != displayedOutput_)) {
-        draw(speedCode, negotiating, failed, input, output);
-        displayedSpeed_ = speedCode;
-        displayedNegotiating_ = negotiating;
-        displayedFailed_ = failed;
-        displayedInput_ = input;
-        displayedOutput_ = output;
-        nextByte_ = 0;
+void Panel::service(uint32_t now, const Status *ports, bool usbReady) {
+    uint16_t state[2] = {};
+    uint8_t activity[2] = {};
+    for (uint8_t i = 0; i < 2; ++i) {
+        const Status &port = ports[i];
+        activity[i] = input_[i].visible(now) | (output_[i].visible(now) << 1);
+        state[i] = port.speed | (port.negotiating << 4) | (port.linkFailed << 5)
+                   | (activity[i] << 6) | (port.limit << 8)
+                   | (static_cast<uint16_t>(port.fault) << 12)
+                   | (port.showLimit ? uint16_t{0x8000} : uint16_t{0});
+        const bool lit = port.negotiating ? (now & 128) : port.speed > 1;
+        if (lit) PORTE |= turboLed[i];
+        else PORTE &= ~turboLed[i];
     }
-    if (nextByte_ < frameBytes) {
-        flushChunk();
+    const bool firstPorts = screen_ == Screen::Starting;
+    if (firstPorts && now < splashMs) {
+        if (usbReady && !usbDisplayed_) {
+            drawProgress(progressInterior);
+            nextByte_ = progressPage * width;
+            fastFlush_ = true;
+            usbDisplayed_ = true;
+        }
+        return;
+    }
+    const bool usbChanged = usbReady != usbDisplayed_;
+    const bool statusChanged = ((state[0] ^ displayed_[0]) | (state[1] ^ displayed_[1])) & portStatusMask;
+    const bool priority = firstPorts || usbChanged || statusChanged;
+    if (priority || (nextByte_ == frameBytes && now - lastDraw_ >= 50 &&
+        (state[0] != displayed_[0] || state[1] != displayed_[1]))) {
+        lastDraw_ = now;
+        drawPorts(ports, activity, usbReady);
+        displayed_[0] = state[0];
+        displayed_[1] = state[1];
+        screen_ = Screen::Ports;
+        usbDisplayed_ = usbReady;
+        nextByte_ = 0;
+        fastFlush_ = priority;
+    }
+    if (!fastFlush_ && nextByte_ < frameBytes) flushChunk();
+}
+
+void Panel::flushPriorityChunk() {
+    if (!fastFlush_) return;
+    flushChunk();
+    fastFlush_ = nextByte_ < frameBytes;
+}
+
+void Panel::drawProgress(uint8_t filled) {
+    uint8_t *bar = frame_ + progressPage * width + progressX;
+    bar[0] = bar[progressWidth - 1] = 0x1f;
+    for (uint8_t i = 1; i < progressWidth - 1; ++i) {
+        bar[i] = i <= filled ? 0x1f : 0x11;
     }
 }
 
-void Panel::draw(uint8_t speedCode, bool negotiating, bool failed,
-                 bool input, bool output) {
+void Panel::drawPorts(const Status *ports, const uint8_t *activity, bool usbReady) {
     memset(frame_, 0, sizeof(frame_));
-    if (recoveryHeld_) {
-        drawText(4, 8, "USB UPDATE", 2);
-        return;
+    constexpr uint8_t portWidth = width / 2;
+    frame_[portWidth - 1] = 0xff;
+    frame_[width + portWidth - 1] = 0x7f;
+    frame_[2 * width + portWidth - 1] = 0xfe;
+    if (usbReady) frame_[3 * width + portWidth - 1] = 0x7f;
+    for (uint8_t i = 0; i < 2; ++i) {
+        const uint8_t x = i * portWidth;
+        const Status &port = ports[i];
+        const char *speed = speedLabel(port.speed);
+        drawText(x + 5, 0, speed, strlen(speed) <= 2 ? 2 : 1);
+        drawText(x + 39, 0, "I", 1);
+        drawIndicator(x + 50, 0, activity[i] & 1);
+        drawText(x + 39, 8, "O", 1);
+        drawIndicator(x + 50, 8, activity[i] & 2);
+        drawText(x + 26, 17, i ? "P2" : "P1", 1);
+        if (!usbReady) continue;
+        const char *label = nullptr;
+        switch (port.fault) {
+        case Fault::RxFull: label = "RX FULL"; break;
+        case Fault::Din: label = "DIN ERR"; break;
+        case Fault::TxFull: label = "TX FULL"; break;
+        case Fault::Usb: label = "USB ERR"; break;
+        case Fault::None: break;
+        }
+        if (!label && port.negotiating) label = "TURBO";
+        if (!label && port.linkFailed) label = "NO TURBO";
+        if (label) {
+            const uint8_t textWidth = strlen(label) * 6 - 1;
+            drawText(x + (portWidth - textWidth) / 2, 24, label, 1);
+        } else if (port.showLimit) {
+            const char *limit = speedLabel(port.limit);
+            const uint8_t textWidth = (4 + strlen(limit)) * 6 - 1;
+            const uint8_t left = x + (portWidth - textWidth) / 2;
+            drawText(left, 24, "MAX", 1);
+            drawText(left + 24, 24, limit, 1);
+        }
     }
-
-    drawText(4, 5, "TURBO", 1);
-    drawText(40, 1, speedLabel(speedCode), 2);
-    if (negotiating) {
-        drawText(102, 6, "LINK", 1);
-    } else if (failed) {
-        drawText(102, 6, "ERR", 1);
-    }
-    if (speedCode > 1 && !negotiating) {
-        PORTE |= turboLed;
-    } else {
-        PORTE &= ~turboLed;
-    }
-
-    for (uint8_t x = 4; x < 124; ++x) {
-        pixel(x, 18);
-    }
-    drawText(4, 23, "MIDI IN", 1);
-    drawText(68, 23, "MIDI OUT", 1);
-    drawIndicator(50, input);
-    drawIndicator(118, output);
+    if (!usbReady) drawText(40, 24, "WAIT USB", 1);
 }
 
 void Panel::drawText(uint8_t x, uint8_t y, const char *text, uint8_t scale) {
-    for (; *text; ++text, x += 6 * scale) {
+    uint8_t *row = frame_ + y / 8 * width;
+    // Single-height glyphs can shift down one pixel within the page.
+    const uint8_t shift = y & 1;
+    for (; *text && x + 5 * scale <= width; ++text, x += 6 * scale) {
         for (const Glyph &glyph : glyphs) {
-            if (pgm_read_byte(&glyph.symbol) != *text) {
-                continue;
-            }
+            if (pgm_read_byte(&glyph.symbol) != *text) continue;
+            uint8_t *out = row + x;
             for (uint8_t column = 0; column < 5; ++column) {
                 const uint8_t dots = pgm_read_byte(&glyph.columns[column]);
-                for (uint8_t row = 0; row < 7; ++row) {
-                    if (dots & _BV(row)) {
-                        for (uint8_t dx = 0; dx < scale; ++dx) {
-                            for (uint8_t dy = 0; dy < scale; ++dy) {
-                                pixel(x + column * scale + dx, y + row * scale + dy);
-                            }
-                        }
-                    }
+                if (scale == 1) {
+                    *out++ |= dots << shift;
+                } else {
+                    const uint8_t top = pgm_read_byte(doubledNibble + (dots & 15));
+                    const uint8_t bottom = pgm_read_byte(doubledNibble + (dots >> 4));
+                    out[0] |= top;
+                    out[1] |= top;
+                    out[width] |= bottom;
+                    out[width + 1] |= bottom;
+                    out += 2;
                 }
             }
             break;
@@ -255,35 +415,27 @@ void Panel::drawText(uint8_t x, uint8_t y, const char *text, uint8_t scale) {
     }
 }
 
-void Panel::drawIndicator(uint8_t x, bool active) {
-    for (uint8_t column = 0; column < 8; ++column) {
-        for (uint8_t row = 0; row < 7; ++row) {
-            if (active || column == 0 || column == 7 || row == 0 || row == 6) {
-                pixel(x + column, 23 + row);
-            }
-        }
-    }
-}
-
-void Panel::pixel(uint8_t x, uint8_t y) {
-    if (x < width && y < height) {
-        frame_[x + (y / 8) * width] |= _BV(y & 7);
-    }
+void Panel::drawIndicator(uint8_t x, uint8_t y, bool active) {
+    uint8_t *pixels = frame_ + (y / 8) * width + x;
+    pixels[0] = pixels[3] = 0x7c;
+    pixels[1] = pixels[2] = active ? 0x7c : 0x44;
 }
 
 void Panel::flushChunk() {
     constexpr uint8_t chunkBytes = 16;
-    const uint8_t column = nextByte_ % width;
+    writePixels(nextByte_ % width, nextByte_ / width, frame_ + nextByte_, chunkBytes);
+    nextByte_ += chunkBytes;
+}
+
+void Panel::writePixels(uint8_t column, uint8_t page, const uint8_t *data, uint8_t count) {
     PORTL &= ~(oledSelect | oledData);
-    spiByte(0xB0 | (nextByte_ / width));
+    spiByte(0xB0 | page);
     spiByte(column & 0x0F);
     spiByte(0x10 | (column >> 4));
     PORTL |= oledSelect;
 
     PORTL |= oledData;
     PORTL &= ~oledSelect;
-    for (uint8_t i = 0; i < chunkBytes; ++i) {
-        spiByte(frame_[nextByte_++]);
-    }
+    for (uint8_t i = 0; i < count; ++i) spiByte(data[i]);
     PORTL |= oledSelect;
 }
