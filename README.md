@@ -13,6 +13,8 @@
 
 To verify the HEX files, download [SHA256SUMS](https://github.com/waftlord/mc-turbo-midi/releases/download/v1.0.0/SHA256SUMS) to the same folder and run `shasum -a 256 -c SHA256SUMS`.
 
+**This firmware replaces MCL and turns your MegaCommand DIY into a standalone USB-to-DIN MIDI bridge. To return to MCL, reinstall MCL on the ATmega2560, then restore the original ATmega16U2 USB firmware via DFU.**
+
 ## Build from source
 
 With PlatformIO Core and Python 3.9+, download `megacmd_usb_dfu_1.0.4.zip` from [MCL 5.00](https://github.com/jmamma/MCL/releases/tag/5.00), then run `python3 tools/build_package.py --bundle /path/to/megacmd_usb_dfu_1.0.4.zip`.
