@@ -11,7 +11,7 @@
 
 For other serial uploaders, use **Wiring/STK500v2 at 115200 baud**.
 
-**Need the matching USB firmware?** After step 2, flash the [ATmega16U2 DFU HEX](https://github.com/waftlord/mc-turbo-midi/releases/download/v1.0.0/megacommand-diy-dual-atmega16u2-dfu.hex) once using the [MegaCommand DIY hardware DFU instructions](https://github.com/jmamma/MCL/releases/tag/5.00), then turn the board off and back on.
+After step 2, flash the [ATmega16U2 DFU HEX](https://github.com/waftlord/mc-turbo-midi/releases/download/v1.0.0/megacommand-diy-dual-atmega16u2-dfu.hex) once using the [MegaCommand DIY hardware DFU instructions](https://github.com/jmamma/MCL/releases/tag/5.00), then turn the board off and back on.
 
 To verify the HEX files, download [SHA256SUMS](https://github.com/waftlord/mc-turbo-midi/releases/download/v1.0.0/SHA256SUMS) to the same folder and run `shasum -a 256 -c SHA256SUMS`.
 
