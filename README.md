@@ -6,12 +6,12 @@
 
 ## Install
 
-Download the HEX files and `SHA256SUMS` from the [GitHub release](https://github.com/waftlord/mcl-turbo-midi/releases/latest). Run `shasum -a 256 -c SHA256SUMS` in the download folder.
+1. Hold **PAGE** while powering on. Release it when the OLED shows **USB UPDATE**. If the full MCL boot menu opens, choose **OS UPGRADE**.
+2. Select the board’s USB serial port in your uploader and flash the [ATmega2560 update HEX](https://github.com/waftlord/mcl-turbo-midi/releases/download/v1.0.0/megacommand-diy-dual-atmega2560-update.hex) using **Wiring/STK500v2 at 115200 baud**. With the matching USB firmware installed, the board returns to USB MIDI automatically.
 
-1. **ATmega2560:** Hold **PAGE** at power-on to enter USB serial update mode. If switching from full MCL, select **OS UPGRADE** in its boot menu. Release PAGE before uploading the ATmega2560 update HEX with a Wiring/STK500v2 uploader at 115200 baud. With the matching USB firmware installed, the board returns to USB MIDI automatically after a successful upload.
-2. **ATmega16U2, first install only:** If your board needs the matching USB firmware, flash the DFU HEX once using the [MegaCommand DIY DFU instructions](https://github.com/jmamma/MCL/releases/tag/5.00), then power-cycle. Boards already running it only need step 1.
+**Need the matching USB firmware?** After step 2, flash the [ATmega16U2 DFU HEX](https://github.com/waftlord/mcl-turbo-midi/releases/download/v1.0.0/megacommand-diy-dual-atmega16u2-dfu.hex) once using the [MegaCommand DIY hardware DFU instructions](https://github.com/jmamma/MCL/releases/tag/5.00), then turn the board off and back on.
 
-Use the standard ATmega2560 HEX unless you want [optional MCDT encoder reports](PROTOCOL.md#optional-encoder-reports).
+The [release downloads](https://github.com/waftlord/mcl-turbo-midi/releases/tag/v1.0.0) also include the optional MCDT encoder HEX and `SHA256SUMS`. To verify the HEX files, run `shasum -a 256 -c SHA256SUMS` in the download folder.
 
 ## Build from source
 
