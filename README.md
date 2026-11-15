@@ -15,7 +15,7 @@ After step 2, flash the [ATmega16U2 DFU HEX](https://github.com/waftlord/mc-turb
 
 To verify the HEX files, download [SHA256SUMS](https://github.com/waftlord/mc-turbo-midi/releases/download/v1.0.0/SHA256SUMS) to the same folder and run `shasum -a 256 -c SHA256SUMS`.
 
-**This firmware replaces MCL and turns your MegaCommand DIY into a standalone USB-to-DIN MIDI bridge. To return to MCL, reinstall MCL on the ATmega2560, then restore the original ATmega16U2 USB firmware via DFU.**
+**This firmware replaces MCL and turns your MegaCommand DIY into a standalone USB-to-DIN MIDI bridge.** To return to MCL, install the ATmega2560 HEX from the [latest stable MCL release](https://github.com/jmamma/MCL/releases/latest). Then use hardware DFU to flash `megacommand-diy-usb-midi-1.0.4.hex` from the [official MCL USB firmware bundle](https://github.com/jmamma/MCL/releases/download/5.02/megacmd_usb_dfu_1.0.4.zip).
 
 ## Build from source
 
