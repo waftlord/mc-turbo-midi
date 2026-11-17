@@ -9,7 +9,6 @@ public:
     struct Status {
         uint8_t speed;
         uint8_t limit;
-        bool showLimit;
         bool negotiating;
         bool linkFailed;
         Fault fault;
@@ -50,7 +49,6 @@ private:
     uint8_t frame_[frameBytes] = {};
     uint16_t nextByte_ = frameBytes;
     uint32_t lastButtonPoll_ = 0;
-    uint32_t lastDraw_ = 0;
     uint32_t rawChangedAt_[4] = {};
     Activity input_[2], output_[2];
     uint16_t displayed_[2] = {0xffff, 0xffff};

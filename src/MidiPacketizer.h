@@ -84,8 +84,10 @@ public:
     template <typename Emit>
     void abortSysEx(uint8_t cable, Emit emit) {
         if (sysexSent_) {
-            const uint8_t end[] = {static_cast<uint8_t>(cable | 5), 0xf7, 0, 0};
-            emit(end);
+            // The buffered one or two bytes preceded the fault. They fit
+            // in the same USB event as the recovery terminator.
+            data_[count_++] = 0xf7;
+            send(cable | (4 + count_), emit);
         }
         reset();
     }

@@ -50,7 +50,7 @@ def assert_bytes(actual, expected, boundary):
         )
 
 
-def model_classes():
+def model_classes(observe=None):
 
     def execute(chip):
         size, op, _, target = chip.instructions[chip.pc]
@@ -65,6 +65,14 @@ def model_classes():
         else:
             Avr.step(chip)
 
+    if observe is not None:
+        run_instruction = execute
+
+        def execute(chip):
+            pc, start = chip.pc, chip.cycles
+            run_instruction(chip)
+            observe(chip, pc, chip.cycles - start)
+
     class Usb(UsbAvr):
         def __init__(self, image):
             super().__init__(image)
@@ -77,7 +85,7 @@ def model_classes():
 
         def read(self, address):
             if address == 0xC8:
-                return (0x20 if self.tx_data is None else 0) | (0x40 if self.tx_shift is None else 0)
+                return (self.mem[address] & 2) | (0x20 if self.tx_data is None else 0) | (0x40 if self.tx_shift is None else 0)
             if address == 0xCE and self.rx_fifo:
                 return self.rx_fifo.popleft()
             return super().read(address)
@@ -95,10 +103,17 @@ def model_classes():
             self.until(lambda: self.pc == 0x1324)
             assert self.mem[0xCC] == 0
             self.check_endpoint_writes = True
+            self.configure_midi()
+
+        def configure_midi(self, check_names=False):
             self.usb_reset()
             descriptor = next(i for i in range(0x1914, 0x1A10, 2) if self.flash_bytes(i, 4) == b'\x09\x02\x85\x00')
             self.control(bytes.fromhex('80 06 00 01 00 00 12 00'), response=self.flash_bytes(0x117, 18))
             self.control(bytes.fromhex('80 06 00 02 00 00 85 00'), response=self.flash_bytes(descriptor, 133))
+            if check_names:
+                for number in (1, 2):
+                    name = b'\x0e\x03' + f'Port {number}'.encode('utf-16le')
+                    self.control(bytes((0x80, 6, number + 3, 3, 9, 4, len(name), 0)), response=name)
             self.control(bytes.fromhex('00 05 05 00 00 00 00 00'))
             self.control(bytes.fromhex('00 09 01 00 00 00 00 00'))
             assert all(self.endpoints[i].enabled for i in (1, 2))
@@ -112,7 +127,7 @@ def model_classes():
                 self.tx_shift = None
             if self.tx_shift is None and self.tx_data is not None:
                 self.tx_shift, self.tx_data = self.tx_data, None
-                self.tx_end = self.cycles + byte_cycles(self.mem[0xCC])
+                self.tx_end = self.cycles + byte_cycles(self.mem[0xCC]) // (2 if self.mem[0xC8] & 2 else 1)
             while self.input and self.input[0][0] <= self.cycles:
                 _, value = self.input.popleft()
                 if len(self.rx_fifo) < 2:
@@ -129,7 +144,10 @@ def model_classes():
                     endpoint.pending = None
                     endpoint.txini = True
             if self.mem[SREG] & 0x80:
-                if self.mem[0xC9] & 0x80 and self.rx_fifo:
+                ep0 = self.endpoints[0]
+                if ep0.setup and ep0.enabled and ep0.interrupt & 8:
+                    self.interrupt(0x30)
+                elif self.mem[0xC9] & 0x80 and self.rx_fifo:
                     self.interrupt(0x5C)
                 elif self.mem[0xC9] & 0x20 and self.tx_data is None:
                     self.interrupt(0x60)
@@ -139,8 +157,8 @@ def model_classes():
             execute(self)
 
     class Main(MainAvr):
-        def __init__(self, image):
-            super().__init__(image, page=False)
+        def __init__(self, image, page=False):
+            super().__init__(image, page=page)
             self.mem.extend(bytes(0x10000 - len(self.mem)))
             self.inputs = [deque() for _ in UARTS]
             self.outputs = [deque() for _ in UARTS]
@@ -179,7 +197,7 @@ def model_classes():
                     self.tx_shift[port] = None
                     self.txc[port] = self.tx_data[port] is None
                 if self.tx_shift[port] is None and self.tx_data[port] is not None:
-                    self.tx_end[port] = self.cycles + byte_cycles(self.mem[base + 4])
+                    self.tx_end[port] = self.cycles + byte_cycles(self.mem[base + 4]) // (2 if self.mem[base] & 2 else 1)
                     self.tx_shift[port], self.tx_data[port] = self.tx_data[port], None
                 fifo = self.rx_fifo[port]
                 while self.inputs[port] and self.inputs[port][0][0] <= self.cycles:
@@ -209,8 +227,8 @@ def model_classes():
 
 
 class Bench:
-    def __init__(self, images, objdump):
-        usb_model, main_model = model_classes()
+    def __init__(self, images, objdump, observe=None):
+        usb_model, main_model = model_classes(observe)
         self.usb = usb_model(load_hex(images / 'megacommand-diy-dual-atmega16u2-dfu.hex', objdump, 'avr:35'))
         self.main = main_model(load_hex(images / 'megacommand-diy-dual-atmega2560-update.hex', objdump, 'avr:6'))
         self.packetize, self.decode = packetize, midi_bytes
@@ -277,11 +295,11 @@ class Bench:
             assert not self.output_din(port, remove_sense=True), 'status query changed DIN traffic'
         self.clear()
 
-    def negotiate(self, rate):
+    def negotiate(self, rate, ports=(1, 2)):
         request = bytes.fromhex('f0 00 20 3c 04 00 03') + bytes((rate, 0xF7))
         events = self.packetize(request)
         pattern = b'\x55' * 4 + bytes(4)
-        for port in (1, 2):
+        for port in ports:
             self.send_host((port, events))
             self.run(10)
             assert_bytes(self.output_din(port), command(0x10), f'port {port} speed request')
@@ -317,14 +335,15 @@ class Bench:
             assert_bytes(self.read_host(port), speed_report(1), f'port {port} return to 1x')
         self.status(1)
 
-    def replay(self, records, ports, pause_ms=0, realtime=False):
+    def replay(self, records, ports, pause_ms=0, realtime=False, port2_records=None):
         self.clear()
-        usb_events = b''.join(self.packetize(record) for record in records)
-        expected = b''.join(records)
         outbound = {}
         inbound = {}
         self.usb.pause_in_until = self.usb.cycles + pause_ms * CYCLES_PER_MS
         for port in ports:
+            source = port2_records if port == 2 and port2_records is not None else records
+            usb_events = b''.join(self.packetize(record) for record in source)
+            expected = b''.join(source)
             if realtime:
                 # Put realtime after a complete packet, past the held prefix.
                 # Different statuses on all lines also check cable isolation.
@@ -346,7 +365,8 @@ class Bench:
                              for delay in range(150, 2200, 150))
         self.send_host(*((port, outbound[port][0]) for port in ports))
         # End at the wire drain, allowing time for the final USB IN poll.
-        timeout_ms = pause_ms + len(expected) * byte_cycles(self.divisor(ports[0])) // CYCLES_PER_MS + 2000
+        timeout_ms = pause_ms + max(len(inbound[p]) * byte_cycles(self.divisor(p))
+                                    for p in ports) // CYCLES_PER_MS + 2000
         expected_events = sum(len(events) + (8 if realtime else 0) for events, _ in outbound.values())
         self.run(timeout_ms, lambda: len(self.usb.in_wire) >= expected_events and
                  all(len(self.main.outputs[port]) >= len(outbound[port][1]) for port in ports))
@@ -368,8 +388,8 @@ class Bench:
             print(f'port {port}: {len(inbound[port])} USB IN bytes, {len(target)} DIN OUT bytes, minimum '
                   f'{min(wire_gaps) / 16:g} µs, max gap within SysEx {max(in_record_gaps) / 16:g} µs',
                   flush=True)
+        self.check_usb_banks()
         self.assert_no_loss()
-
 
     def check_usb_banks(self):
         # An interleaved realtime event may precede SysEx data in a bank,
@@ -446,7 +466,7 @@ def replay_records(capture):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     replay_args(parser)
-    parser.add_argument('--case', choices=('cold', 'return', '2x', '4x', '8x', 'stress',
+    parser.add_argument('--case', choices=('cold', 'return', '2x', '4x', '8x', 'mixed', 'stress', 'burst',
                                           'interruption', 'realtime'), required=True)
     args = parser.parse_args()
     bench, records = start_bench(parser, args)
@@ -462,10 +482,20 @@ def main():
     elif args.case in ('2x', '4x', '8x'):
         bench.negotiate({'2x': 2, '4x': 4, '8x': 7}[args.case])
         bench.replay(records, (1, 2), realtime=True)
+    elif args.case == 'mixed':
+        bench.negotiate(7, (2,))
+        assert (bench.divisor(1), bench.divisor(2)) == (31, 3)
+        bench.replay(records, (1, 2), realtime=True, port2_records=records[::-1])
+        assert (bench.divisor(1), bench.divisor(2)) == (31, 3)
     elif args.case == 'stress':
         bench.negotiate(7)
         long_dump = b'\xf0\x7d' + bytes(range(128)) * 188 + b'\xf7'
         bench.replay([long_dump], (1, 2), pause_ms=128, realtime=True)
+    elif args.case == 'burst':
+        bench.negotiate(7)
+        dumps = [b'\xf0\x7d' + bytes((offset,)) + bytes(range(128)) * 63 + b'\xf7'
+                 for offset in range(3)]
+        bench.replay(dumps, (1, 2), pause_ms=128, realtime=True, port2_records=dumps[::-1])
     elif args.case == 'realtime':
         bench.status(1)
         bench.interleaved_realtime(records)
@@ -481,7 +511,7 @@ def main():
             bench.run(10)
             bench.input_din(port, b'\x04\x05\xf7' + records[0])
             bench.run(400)
-            assert_bytes(bench.read_host(port), b'\xf0\x7d\x01\xf7' + speed_report(1) + records[0],
+            assert_bytes(bench.read_host(port), b'\xf0\x7d\x01\x02\xf7' + speed_report(1) + records[0],
                          'DIN framing recovery and settled rate')
 
             # Corrupt a received internal heartbeat's CRC while DIN OUT is

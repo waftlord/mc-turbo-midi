@@ -1,0 +1,2 @@
+# Match the verified HEX manifest on every checkout, including CRLF records.
+build/*.hex binary

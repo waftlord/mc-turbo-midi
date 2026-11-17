@@ -212,14 +212,27 @@ void sendFrame(uint8_t type, const uint8_t *data = nullptr, uint8_t length = 0) 
     appendUsbByte(head, type);
     uint8_t crc = bridgeCrc(0, type);
     if (type == BRIDGE_DATA || type == BRIDGE_SYSEX) {
-        const uint8_t expanded = type == BRIDGE_SYSEX ? length + length / 3 : length;
-        appendUsbByte(head, expanded);
-        crc = bridgeCrc(crc, expanded);
+        appendUsbByte(head, length);
+        crc = bridgeCrc(crc, length);
     }
-    for (uint8_t i = 0; i < length; ++i) {
-        const uint8_t byte = data[i];
-        appendUsbEscaped(head, byte);
-        crc = bridgeCrc(crc, byte);
+    if (type == BRIDGE_SYSEX) {
+        // Encode full USB events directly into the link ring. Only the
+        // cable-tagged first payload byte can need a wire escape.
+        for (uint8_t i = 0; i < length; i += 4) {
+            const uint8_t first = data[i + 1] | ((data[i] & 16) << 3);
+            appendUsbEscaped(head, first);
+            crc = bridgeCrc(crc, first);
+            appendUsbByte(head, data[i + 2]);
+            crc = bridgeCrc(crc, data[i + 2]);
+            appendUsbByte(head, data[i + 3]);
+            crc = bridgeCrc(crc, data[i + 3]);
+        }
+    } else {
+        for (uint8_t i = 0; i < length; ++i) {
+            const uint8_t byte = data[i];
+            appendUsbEscaped(head, byte);
+            crc = bridgeCrc(crc, byte);
+        }
     }
     appendUsbEscaped(head, crc);
     usbUart.txHead = head;
@@ -357,6 +370,7 @@ struct Port {
             }
             if (first >= 0x80) {
                 awaitHostStatus = false;
+                if (first == 0xf0 && !hostSysEx) hostSysExStarted = now;
                 hostSysEx = first == 0xf0;
             }
             if (event[length] == 0xf7) {
@@ -368,7 +382,7 @@ struct Port {
         }
 
         // Credits reserve room for the batch and bytes held by the filter.
-        if (toDin.free() < uint16_t(length) + 16) {
+        if (toDin.free() < uint16_t(length) + ControlFilter::maxBuffered) {
             fault = Panel::Fault::TxFull;
             resetPending = true;
             return;
@@ -407,8 +421,8 @@ struct Port {
 
     void receiveSysEx(const uint8_t *data, uint32_t now) {
         const uint16_t free = toDin.free();
-        if ((data[1] | data[2]) >= 0x80 || free < 19) {
-            fault = free < 19 ? Panel::Fault::TxFull : Panel::Fault::Usb;
+        if ((data[1] | data[2]) >= 0x80 || free < 3 + ControlFilter::maxBuffered) {
+            fault = free < 3 + ControlFilter::maxBuffered ? Panel::Fault::TxFull : Panel::Fault::Usb;
             resetPending = true;
             return;
         }
@@ -475,9 +489,19 @@ struct Port {
         const uint16_t free = toHost.free();
         // Until a USB host drains the queues, keep the MIDI bytes in the
         // raw ring. Reserve a few extra events for any held SysEx prefix.
-        const uint8_t budget = free >= 4 * (sizeof(input) + 16)
-            ? sizeof(input) : free > 64 ? (free - 64) / 4 : 0;
-        if (!error && !budget && linkReady && !turbo.busy()) return;
+        constexpr uint8_t reserve = 4 * ControlFilter::maxBuffered;
+        const uint8_t budget = free >= 4 * sizeof(input) + reserve
+            ? sizeof(input) : free > reserve ? (free - reserve) / 4 : 0;
+        if (!error && !budget && linkReady && !turbo.busy()) {
+            // USB backpressure can park the reader for longer than the
+            // Turbo peer timeout. Only fresh ISR writes prove it is alive.
+            const uint8_t head = uart.rxHead;
+            if (head != blockedRxHead) {
+                blockedRxHead = head;
+                turbo.noteDinActivity(now);
+            }
+            return;
+        }
         const uint8_t readBudget = budget ? budget : sizeof(input);
         const uint8_t length = testing ? (error ? 0 : readFastTest(input, readBudget, now))
                                        : uart.readDin(input, readBudget, error);
@@ -521,10 +545,12 @@ struct Port {
             inputSeen |= isStatus;
             dinFilter.accept(byte, now, forward, [this, now, &payloadPaused](
                                  const uint8_t *frame, uint8_t size) {
+                // A consumed DIN control is still a SysEx boundary on the
+                // wire. Cancel running status and close any interrupted dump.
+                inputLoss = true;
+                recoverInput();
                 turbo.receive(frame, size, now);
-                const bool paused = turbo.pausePayload();
-                if (!payloadPaused && paused && parser.sysex()) inputLoss = true;
-                payloadPaused = paused;
+                payloadPaused = turbo.pausePayload();
             });
         }
         if (activity) {
@@ -544,12 +570,10 @@ struct Port {
         parser.accept(value, number << 4, [this](const uint8_t *event) { packet(event); });
     }
 
-    void cycleLimit(uint32_t now) {
+    void cycleLimit() {
         const uint8_t current = requestedLimit == noLimit ? turbo.limit() : requestedLimit;
         requestedLimit = current < 2 ? 2 : current < 4 ? 4 : current < 7 ? 7 : 1;
         requestedLimitFromHost = false;
-        limitShownAt = now;
-        showLimit = true;
         fault = Panel::Fault::None;
     }
 
@@ -612,8 +636,17 @@ struct Port {
         while (count < capacity && !toDin.empty()) {
             if (waitingForControl && outgoing.complete()) break;
             const uint8_t byte = toDin.front();
-            if (byte == 0xf0 && !sysexEnds && toDin.size() < sysexStartWatermark &&
-                now - lastHostAt < 150) break;
+            // Only prefill a dump that the host is still sending. A channel
+            // status can end an interrupted SysEx without an explicit EOX.
+            if (byte == 0xf0 && hostSysEx && !sysexEnds && now - lastHostAt < 150) {
+                const uint16_t queued = toDin.size();
+                const uint32_t age = now - hostSysExStarted;
+                // A slowly streamed record cannot prefill fast enough to
+                // keep the DIN UART busy. Bound startup for that sender,
+                // while allowing a dense transfer to build its reservoir.
+                if (queued < sysexStartWatermark && age < 1250 &&
+                    (age < 150 || queued >= age)) break;
+            }
             toDin.pop();
             if (byte == 0xf7 && sysexEnds) --sysexEnds;
             uart.tx[head++] = byte;
@@ -672,10 +705,9 @@ struct Port {
     ControlFilter dinFilter{MidiSide::Din}, usbFilter{MidiSide::Usb};
     MidiBoundary outgoing;
     MidiPacketizer parser;
-    uint32_t limitShownAt = 0;
     uint32_t lastHostAt = 0;
+    uint32_t hostSysExStarted = 0;
     uint32_t lastDinAt = 0;
-    bool showLimit = false;
     uint16_t credit = 0;
     uint16_t sysexEnds = 0;
     uint8_t requestedLimit = noLimit;
@@ -687,6 +719,7 @@ struct Port {
     Panel::Fault fault = Panel::Fault::None;
     bool inputLoss = false;
     bool inputSeen = false;
+    uint8_t blockedRxHead = 0;
     bool awaitStatus = true;
     bool awaitHostStatus = true;
     bool hostSysEx = false;
@@ -849,19 +882,7 @@ __attribute__((noinline)) void serviceUsbOut(uint32_t now) {
     }
     --returnBatchCredits;
     lastBank = now;
-    if (compact) {
-        uint8_t count = 0;
-        for (uint8_t i = 0; i < length; i += 4) {
-            const uint8_t cable = data[i] & 16;
-            const uint8_t first = data[i + 1];
-            data[count++] = first | (cable << 3);
-            data[count++] = data[i + 2];
-            data[count++] = data[i + 3];
-        }
-        sendFrame(BRIDGE_SYSEX, data, count);
-    } else {
-        sendFrame(BRIDGE_DATA, data, length);
-    }
+    sendFrame(compact ? BRIDGE_SYSEX : BRIDGE_DATA, data, length);
 }
 
 } // namespace
@@ -927,15 +948,14 @@ int main() {
                     port.button = !port.button;
                     port.fault = Panel::Fault::None;
                 }
-                if (pressed & (4 << port.number)) port.cycleLimit(now);
-                if (port.showLimit && now - port.limitShownAt >= 1400) port.showLimit = false;
+                if (pressed & (4 << port.number)) port.cycleLimit();
                 port.serviceReport();
                 uint8_t limit = port.turbo.limit();
                 if (port.requestedLimit != noLimit) {
                     limit = port.requestedLimit >= 7 ? 7 : port.requestedLimit >= 4 ? 4 :
                             port.requestedLimit >= 2 ? 2 : 1;
                 }
-                status[port.number] = {port.turbo.speed(), limit, port.showLimit,
+                status[port.number] = {port.turbo.speed(), limit,
                                        port.turbo.busy(), port.turbo.failed(), port.fault};
             }
             panel.service(now, status, usbReady);

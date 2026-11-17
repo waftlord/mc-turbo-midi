@@ -25,7 +25,7 @@ constexpr uint8_t progressX = 28;
 constexpr uint8_t progressWidth = 72;
 constexpr uint8_t progressInterior = progressWidth - 2;
 constexpr uint8_t progressPage = 3;
-constexpr uint16_t portStatusMask = 0x7030; // Link and fault bits.
+constexpr uint16_t activityMask = 0x00c0;
 
 // Map four source pixels to eight pixels for the large OLED text.
 constexpr uint8_t doubledNibble[] PROGMEM = {
@@ -53,40 +53,50 @@ constexpr uint8_t oledInit[] PROGMEM = {
     0xAF,             // Display on.
 };
 
-struct Glyph {
-    char symbol;
-    uint8_t columns[5];
-};
-
+// Direct ASCII lookup avoids scanning flash for each letter on a status change.
 // Includes glyphs from the Adafruit GFX classic font.
-constexpr Glyph glyphs[] PROGMEM = {
-    {'.', {0x00, 0x60, 0x60, 0x00, 0x00}},
-    {'0', {0x3E, 0x51, 0x49, 0x45, 0x3E}},
-    {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}},
-    {'2', {0x42, 0x61, 0x51, 0x49, 0x46}},
-    {'3', {0x21, 0x41, 0x45, 0x4B, 0x31}},
-    {'4', {0x18, 0x14, 0x12, 0x7F, 0x10}},
-    {'5', {0x27, 0x45, 0x45, 0x45, 0x39}},
-    {'6', {0x3C, 0x4A, 0x49, 0x49, 0x30}},
-    {'8', {0x36, 0x49, 0x49, 0x49, 0x36}},
-    {'A', {0x7E, 0x11, 0x11, 0x11, 0x7E}},
-    {'B', {0x7F, 0x49, 0x49, 0x49, 0x36}},
-    {'D', {0x7F, 0x41, 0x41, 0x22, 0x1C}},
-    {'E', {0x7F, 0x49, 0x49, 0x49, 0x41}},
-    {'F', {0x7F, 0x09, 0x09, 0x09, 0x01}},
-    {'I', {0x00, 0x41, 0x7F, 0x41, 0x00}},
-    {'K', {0x7F, 0x08, 0x14, 0x22, 0x41}},
-    {'L', {0x7F, 0x40, 0x40, 0x40, 0x40}},
-    {'M', {0x7F, 0x02, 0x0C, 0x02, 0x7F}},
-    {'N', {0x7F, 0x04, 0x08, 0x10, 0x7F}},
-    {'O', {0x3E, 0x41, 0x41, 0x41, 0x3E}},
-    {'P', {0x7F, 0x09, 0x09, 0x09, 0x06}},
-    {'R', {0x7F, 0x09, 0x19, 0x29, 0x46}},
-    {'S', {0x46, 0x49, 0x49, 0x49, 0x31}},
-    {'T', {0x01, 0x01, 0x7F, 0x01, 0x01}},
-    {'U', {0x3F, 0x40, 0x40, 0x40, 0x3F}},
-    {'W', {0x3F, 0x40, 0x38, 0x40, 0x3F}},
-    {'X', {0x63, 0x14, 0x08, 0x14, 0x63}},
+constexpr uint8_t glyphs[][5] PROGMEM = {
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // 0
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // 1
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // 2
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // 3
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // 4
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // 5
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // 6
+    {}, // 7
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // 8
+    {}, // 9
+    {}, // :
+    {}, // ;
+    {}, // <
+    {}, // =
+    {}, // >
+    {}, // ?
+    {}, // @
+    {0x7E, 0x11, 0x11, 0x11, 0x7E}, // A
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // B
+    {}, // C
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // D
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // E
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, // F
+    {}, // G
+    {}, // H
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // I
+    {}, // J
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // K
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // L
+    {0x7F, 0x02, 0x0C, 0x02, 0x7F}, // M
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // N
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // O
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // P
+    {}, // Q
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // R
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // S
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // T
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // U
+    {}, // V
+    {0x3F, 0x40, 0x38, 0x40, 0x3F}, // W
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // X
 };
 
 uint8_t shiftReadByte() {
@@ -123,15 +133,8 @@ void spiByte(uint8_t data) {
 const char *speedLabel(uint8_t code) {
     switch (code) {
     case 2: return "2X";
-    case 3: return "3.3X";
     case 4: return "4X";
-    case 5: return "5X";
-    case 6: return "6.7X";
     case 7: return "8X";
-    case 8: return "10X";
-    case 9: return "13.3X";
-    case 10: return "16X";
-    case 11: return "20X";
     default: return "1X";
     }
 }
@@ -243,8 +246,7 @@ void Panel::service(uint32_t now, const Status *ports, bool usbReady) {
         activity[i] = input_[i].visible(now) | (output_[i].visible(now) << 1);
         state[i] = port.speed | (port.negotiating << 4) | (port.linkFailed << 5)
                    | (activity[i] << 6) | (port.limit << 8)
-                   | (static_cast<uint16_t>(port.fault) << 12)
-                   | (port.showLimit ? uint16_t{0x8000} : uint16_t{0});
+                   | (static_cast<uint16_t>(port.fault) << 12);
         const bool lit = port.negotiating ? (now & 128) : port.speed > 1;
         if (lit) PORTE |= turboLed[i];
         else PORTE &= ~turboLed[i];
@@ -260,18 +262,28 @@ void Panel::service(uint32_t now, const Status *ports, bool usbReady) {
         return;
     }
     const bool usbChanged = usbReady != usbDisplayed_;
-    const bool statusChanged = ((state[0] ^ displayed_[0]) | (state[1] ^ displayed_[1])) & portStatusMask;
-    const bool priority = firstPorts || usbChanged || statusChanged;
-    if (priority || (nextByte_ == frameBytes && now - lastDraw_ >= 50 &&
-        (state[0] != displayed_[0] || state[1] != displayed_[1]))) {
-        lastDraw_ = now;
+    const uint16_t changes = (state[0] ^ displayed_[0]) | (state[1] ^ displayed_[1]);
+    if (firstPorts || usbChanged || (changes & ~activityMask)) {
         drawPorts(ports, activity, usbReady);
         displayed_[0] = state[0];
         displayed_[1] = state[1];
         screen_ = Screen::Ports;
         usbDisplayed_ = usbReady;
         nextByte_ = 0;
-        fastFlush_ = priority;
+        fastFlush_ = true;
+    } else if (changes && nextByte_ == frameBytes) {
+        // Only rewrite the four columns of the changed indicator. Service
+        // at most one per tick to bound foreground time during MIDI bursts.
+        for (uint8_t i = 0; i < 2; ++i) {
+            const uint16_t changed = state[i] ^ displayed_[i];
+            if (!changed) continue;
+            const uint8_t row = (changed & 0x40) ? 0 : 1;
+            const uint8_t x = i * (width / 2) + 50;
+            drawIndicator(x, row * 8, activity[i] & (1 << row));
+            writePixels(x, row, frame_ + row * width + x, 4);
+            displayed_[i] ^= uint16_t{0x40} << row;
+            break;
+        }
     }
     if (!fastFlush_ && nextByte_ < frameBytes) flushChunk();
 }
@@ -306,8 +318,9 @@ void Panel::drawPorts(const Status *ports, const uint8_t *activity, bool usbRead
         drawIndicator(x + 50, 0, activity[i] & 1);
         drawText(x + 39, 8, "O", 1);
         drawIndicator(x + 50, 8, activity[i] & 2);
-        drawText(x + 26, 17, i ? "P2" : "P1", 1);
-        if (!usbReady) continue;
+        drawText(x + 4, 17, i ? "P2" : "P1", 1);
+        drawText(x + 22, 17, "MAX", 1);
+        drawText(x + 46, 17, speedLabel(port.limit), 1);
         const char *label = nullptr;
         switch (port.fault) {
         case Fault::RxFull: label = "RX FULL"; break;
@@ -316,20 +329,14 @@ void Panel::drawPorts(const Status *ports, const uint8_t *activity, bool usbRead
         case Fault::Usb: label = "USB ERR"; break;
         case Fault::None: break;
         }
+        if (!label && !usbReady) label = "WAIT USB";
         if (!label && port.negotiating) label = "TURBO";
         if (!label && port.linkFailed) label = "NO TURBO";
         if (label) {
             const uint8_t textWidth = strlen(label) * 6 - 1;
             drawText(x + (portWidth - textWidth) / 2, 24, label, 1);
-        } else if (port.showLimit) {
-            const char *limit = speedLabel(port.limit);
-            const uint8_t textWidth = (4 + strlen(limit)) * 6 - 1;
-            const uint8_t left = x + (portWidth - textWidth) / 2;
-            drawText(left, 24, "MAX", 1);
-            drawText(left + 24, 24, limit, 1);
         }
     }
-    if (!usbReady) drawText(40, 24, "WAIT USB", 1);
 }
 
 void Panel::drawText(uint8_t x, uint8_t y, const char *text, uint8_t scale) {
@@ -337,24 +344,22 @@ void Panel::drawText(uint8_t x, uint8_t y, const char *text, uint8_t scale) {
     // Single-height glyphs can shift down one pixel within the page.
     const uint8_t shift = y & 1;
     for (; *text && x + 5 * scale <= width; ++text, x += 6 * scale) {
-        for (const Glyph &glyph : glyphs) {
-            if (pgm_read_byte(&glyph.symbol) != *text) continue;
-            uint8_t *out = row + x;
-            for (uint8_t column = 0; column < 5; ++column) {
-                const uint8_t dots = pgm_read_byte(&glyph.columns[column]);
-                if (scale == 1) {
-                    *out++ |= dots << shift;
-                } else {
-                    const uint8_t top = pgm_read_byte(doubledNibble + (dots & 15));
-                    const uint8_t bottom = pgm_read_byte(doubledNibble + (dots >> 4));
-                    out[0] |= top;
-                    out[1] |= top;
-                    out[width] |= bottom;
-                    out[width + 1] |= bottom;
-                    out += 2;
-                }
+        if (*text < '0' || *text > 'X') continue;
+        const uint8_t *glyph = glyphs[*text - '0'];
+        uint8_t *out = row + x;
+        for (uint8_t column = 0; column < 5; ++column) {
+            const uint8_t dots = pgm_read_byte(&glyph[column]);
+            if (scale == 1) {
+                *out++ |= dots << shift;
+            } else {
+                const uint8_t top = pgm_read_byte(doubledNibble + (dots & 15));
+                const uint8_t bottom = pgm_read_byte(doubledNibble + (dots >> 4));
+                out[0] |= top;
+                out[1] |= top;
+                out[width] |= bottom;
+                out[width + 1] |= bottom;
+                out += 2;
             }
-            break;
         }
     }
 }

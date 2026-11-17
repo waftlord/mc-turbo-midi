@@ -57,12 +57,24 @@ static inline uint8_t turboDinFrameLength(uint8_t command) {
 // Buffer short control frames while forwarding other MIDI messages.
 class ControlFilter {
 public:
+    static constexpr uint8_t frameCapacity = 16;
+    static constexpr uint8_t realtimeCapacity = 4;
+    static constexpr uint8_t maxBuffered = frameCapacity + realtimeCapacity;
+
     explicit ControlFilter(MidiSide side) : side_(side) {}
 
     template <typename Forward, typename Control>
     void accept(uint8_t byte, uint32_t now, Forward forward, Control control) {
         if (byte >= 0xF8) {
-            forward(byte);
+            if (size_ && realtimeCount_ < realtimeCapacity) {
+                // Remember where this event fell in the undecided prefix.
+                // size_ is 1..15 while waiting for a possible control EOX.
+                if (!realtimeCount_) firstRealtimeAt_ = now;
+                realtime_[realtimeCount_++] = (size_ << 3) | (byte & 7);
+            } else {
+                releaseRealtime(forward);
+                forward(byte);
+            }
             return;
         }
         if (size_ && byte >= 0x80 && byte != 0xF7) {
@@ -87,6 +99,7 @@ public:
         lastByte_ = now;
         if (byte == 0xF7) {
             if (size_ >= 8 && size_ == controlLength()) {
+                releaseRealtime(forward);
                 control(bytes_, size_);
                 size_ = 0;
             } else {
@@ -101,11 +114,15 @@ public:
     void expire(uint32_t now, Forward forward) {
         if (size_ && now - lastByte_ >= 30) {
             flush(forward);
+        } else if (realtimeCount_ && now - firstRealtimeAt_ >= 2) {
+            // A stalled control prefix must not hold transport clock until
+            // the 30 ms prefix timeout. Keep the prefix eligible for control.
+            releaseRealtime(forward);
         }
     }
 
     bool pending() const { return size_ != 0; }
-    void clear() { size_ = 0; }
+    void clear() { size_ = realtimeCount_ = 0; }
 
 private:
     uint8_t controlLength() const {
@@ -119,11 +136,23 @@ private:
     }
 
     template <typename Forward>
+    void releaseRealtime(Forward forward) {
+        for (uint8_t i = 0; i < realtimeCount_; ++i) {
+            forward(0xf8 | (realtime_[i] & 7));
+        }
+        realtimeCount_ = 0;
+    }
+
+    template <typename Forward>
     void flush(Forward forward) {
+        uint8_t index = 0;
         for (uint8_t i = 0; i < size_; ++i) {
             forward(bytes_[i]);
+            while (index < realtimeCount_ && (realtime_[index] >> 3) == i + 1) {
+                forward(0xf8 | (realtime_[index++] & 7));
+            }
         }
-        size_ = 0;
+        clear();
     }
 
     bool matchesPrefix(uint8_t byte) const {
@@ -142,7 +171,10 @@ private:
     }
 
     MidiSide side_;
-    uint8_t bytes_[16];
+    uint8_t bytes_[frameCapacity];
+    uint8_t realtime_[realtimeCapacity];
+    uint8_t realtimeCount_ = 0;
+    uint32_t firstRealtimeAt_ = 0;
     uint8_t size_ = 0;
     uint32_t lastByte_ = 0;
 };

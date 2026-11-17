@@ -10,6 +10,7 @@
 #define REG8(address) (*(volatile uint8_t *)(address))
 #define REG16(address) (*(volatile uint16_t *)(address))
 #define usbState GPIOR0
+#define usbConfiguration REG8(0x26d)
 #define stateConfigured 4
 #define txStart ((volatile uint8_t *)0x158)
 #define txWrite REG16(0x1d8)
@@ -43,6 +44,7 @@ _Static_assert(0x21d + sizeof(BridgeReceiver) <= 0x269,
 #define deviceGrant REG8(0x288)
 #define waitingIn 4
 #define discardPending 16
+#define cdcPending 32  /* inspected by the MIDI polling wrapper */
 
 // These MIDI queue indexes are idle while the stock CDC ring is in use.
 #define cdcStartupMatch rxHead
@@ -131,8 +133,8 @@ static uint8_t inBankReady(void) {
 
 static void sendUsbBank(void) {
     if (!inBankReady()) return;
-    // Keep each critical section below one UART byte time. USB control
-    // interrupts preserve UENUM, while bus reset invalidates the bank.
+    // Keep each critical section below one UART byte time. A bus reset
+    // can invalidate the bank before its pending interrupt is serviced.
     const uint8_t stride = pendingCompact ? 3 : 4;
     const uint8_t writtenEvents = UEBCLX / 4;
     for (uint8_t offset = writtenEvents * stride; offset < pendingLength; offset += stride) {
@@ -189,8 +191,7 @@ static void discardMidiBanks(void) {
     UERST = 0;
 }
 
-/* The USB setup ISR restores UENUM. USB reset can disable a bank in
-   hardware; recheck it before ownership changes. */
+/* USB reset can disable a bank in hardware. Recheck before handoff. */
 static void serviceOut(void) {
     if (!mainBanks || !selectEndpoint(endpointOut) || !(UEINTX & _BV(RXOUTI))) return;
     uint8_t length = 0;
@@ -312,7 +313,7 @@ void dualUsbInit(void) {
 }
 
 static void loseLink(void) {
-    if (usbState == stateConfigured && !(UDINT & (_BV(SUSPI) | _BV(EORSTI)))) {
+    if (usbState == stateConfigured && usbConfiguration && !(UDINT & (_BV(SUSPI) | _BV(EORSTI)))) {
         discardMidiBanks();
         flags = 0;
     } else {
@@ -422,6 +423,14 @@ static void detachForModeChange(void) {
     _delay_ms(250);
 }
 
+void dualEnterCdc(void) {
+    detachForModeChange();
+    UCSR1B = 0;
+    cdcStartupMatch = cdcStartupReady = cdcFramePhase = cdcUpload = 0;
+    flags = 0;
+    stockMode(3);
+}
+
 void dualCdcResumeMidi(void) {
     if (cdcStartupReady) {
         UCSR1B = 0;
@@ -452,10 +461,7 @@ static uint8_t serviceRx(uint8_t budget, uint8_t allowTransfers) {
             // Let the main chip stop retrying before the USART changes to
             // the slower CDC baud. The queue drains during USB detach.
             if (beginTx(5)) send(BRIDGE_CDC, 0, 0);
-            detachForModeChange();
-            UCSR1B = 0;
-            cdcStartupMatch = cdcStartupReady = cdcFramePhase = cdcUpload = 0;
-            stockMode(3);
+            flags = cdcPending;
             return 0;
         }
         if (!allowTransfers) continue;
@@ -507,15 +513,15 @@ static void sendDeviceGrant(void) {
 
 void dualUsbPoll(void) __attribute__((section(".text.dual_usb_poll")));
 void dualUsbPoll(void) {
-    // The stock firmware services USB setup on the polling path in this
-    // mode. If a setup interrupt is enabled, let the stock dispatcher
-    // run it with its shallow stack before entering the transport.
+    // The wrapper dispatches pending setup from its shallow foreground
+    // stack. Give it priority over the next round of MIDI traffic.
     UENUM = 0;
     if (UEINTX & _BV(RXSTPI)) return;
-    if (usbState != stateConfigured || UDINT & (_BV(SUSPI) | _BV(EORSTI))) {
+    if (usbState != stateConfigured || !usbConfiguration || UDINT & (_BV(SUSPI) | _BV(EORSTI))) {
         // Once polling has started, honor a recovery request during a
         // host configuration change without touching the MIDI endpoints.
-        if (!active && !flags) serviceRx(48, 0);
+        if (seenEpoch != bridgeEpoch || rxError) loseLink();
+        if (!active && !(flags & ~discardPending)) serviceRx(48, 0);
         return;
     }
     if (seenEpoch != bridgeEpoch || rxError) loseLink();
@@ -529,7 +535,7 @@ void dualUsbPoll(void) {
     if (flags & waitingIn) sendUsbBank();
     else if (flags & inCommitted) inBankReady();
     serviceRx(48, 1);
-    if (REG8(0x11b) != 2) return;
+    if (flags & cdcPending) return;
     if ((flags & inCommitted) && !(flags & waitingIn)) inBankReady();
     if (flags & ackPending) {
         if (!beginTx(5)) return;
@@ -541,7 +547,7 @@ void dualUsbPoll(void) {
     if (!active) return;
     sendDeviceGrant();
     serviceOut();
-    if (REG8(0x11b) != 2) return;
+    if (flags & cdcPending) return;
     if ((flags & inCommitted) && !(flags & waitingIn)) inBankReady();
     sendDeviceGrant();
 }

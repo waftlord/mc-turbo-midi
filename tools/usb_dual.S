@@ -6,8 +6,100 @@
     nop
 
 .section .midi_loop_hook, "ax", @progbits
+    jmp dualMidiTransport
+    nop
+    nop
+
+.section .text.dual_midi_transport, "ax", @progbits
+dualMidiTransport:
+    /* The stock SETUP ISR allocates a 42-byte local frame and enables
+       nested interrupts. Defer both USB vectors until the transport
+       call returns. The USB controller keeps its pending flags and the
+       UART/timer ISRs keep running. */
+    in r0, 0x3f
+    cli
+    sts 0xe9, r1              /* UENUM = EP0 */
+    lds r24, 0xf0             /* UEIENX */
+    push r24
+    lds r24, 0xe2             /* UDIEN */
+    push r24
+    sts 0xf0, r1              /* MIDI data endpoints use polling */
+    sts 0xe2, r1
+    out 0x3f, r0
     call dualUsbPoll
-    jmp 0x149a
+    in r0, 0x3f
+    cli
+    sts 0xe9, r1
+    pop r24
+    sts 0xe2, r24
+    pop r24
+    lds r18, 0x269
+    sbrc r18, 5               /* switching to CDC */
+    rjmp .LstockSetup
+    in r25, 0x1e              /* stock USB state */
+    cpi r25, 4                /* configured MIDI */
+    brne .LstockSetup
+    /* Keep RXSTPE masked while configured. Polling SETUP below avoids
+       saving sixteen additional registers before the descriptor handler. */
+    andi r24, 0xf7
+    rjmp .LsetupMask
+.LstockSetup:
+    /* The stock reset handler enables SETUP when it configures EP0.
+       Restore this behavior after deconfiguration or on entry to CDC. */
+    lds r25, 0xeb
+    sbrc r25, 0               /* EPEN */
+    ori r24, 8
+.LsetupMask:
+    sts 0xf0, r24
+    out 0x3f, r0
+    /* Switch USB personalities with the stock interrupt masks restored
+       and the large MIDI transport frames already off the stack. */
+    sbrs r18, 5               /* cdcPending */
+    rjmp .LpollSetup
+    call dualEnterCdc
+    jmp 0x149a                /* resume stock personality */
+.LpollSetup:
+    /* Stock's MIDI foreground loop calls the setup dispatcher at
+       0x14be with EP0 selected. Direct dispatch keeps the large setup
+       frame shallow. Rearm RXSTPE here if SET_ADDRESS changed state:
+       the stock configuration wait at 0x1324 does not poll EP0. */
+    lds r24, 0xe8
+    sbrs r24, 3
+    rjmp .LmidiLoop
+    call 0x7cc
+    in r24, 0x1e
+    cpi r24, 4
+    breq .LmidiLoop
+    sts 0xe9, r1
+    lds r24, 0xf0
+    ori r24, 8
+    sts 0xf0, r24
+.LmidiLoop:
+    jmp 0x131c
+
+.section .usb_config_hook, "ax", @progbits
+    call dualSetConfiguration
+
+.section .text.dual_configuration, "ax", @progbits
+dualSetConfiguration:
+    /* Preserve the stock SET_CONFIGURATION store. Endpoint FIFO state
+       is reset even if the host reselects the same configuration. */
+    sts 0x26d, r17
+    push r24
+    in r24, 0x3f
+    push r24
+    cli
+    lds r24, 0x11b
+    cpi r24, 2
+    brne .LconfigurationDone
+    lds r24, 0x282
+    inc r24
+    sts 0x282, r24
+.LconfigurationDone:
+    pop r24
+    out 0x3f, r24
+    pop r24
+    ret
 
 .section .cdc_rx_hook, "ax", @progbits
     call dualCdcRead

@@ -31,7 +31,7 @@ def receive_without_foreground(bench, port, samples):
 def check_gap(bench, port, source, clean, cutoff, uart_error):
     bench.clear()
     # Commit complete USB-MIDI groups before the interrupted part arrives.
-    before = cutoff - 15
+    before = (cutoff - 15) // 3 * 3
     period = byte_cycles(bench.divisor(port))
     bench.input_din(port, source[:before])
     bench.run(before * period // CYCLES_PER_MS + 20)
@@ -57,6 +57,29 @@ def check_gap(bench, port, source, clean, cutoff, uart_error):
           f'recovery F7 and {len(clean)} exact bytes in the next message', flush=True)
 
 
+def check_coalesced_gaps(bench, port):
+    bench.clear()
+    prefix = bytes.fromhex('f0 7d 01 02 03 04')
+    between = bytes.fromhex('90 3c 7f')
+    clean = bytes.fromhex('90 3d 50')
+    # Queue a framing error, a complete note, and an overrun before the
+    # foreground gets to examine either marker. The IRQ records one lost
+    # interval through the second error. Verify the bounds of that interval.
+    samples = [(byte, 0) for byte in prefix]
+    samples.append((7, 0x10))
+    samples.extend((byte, 0) for byte in between)
+    samples.append((8, 0x08))
+    samples.extend((byte, 0) for byte in clean)
+    receive_without_foreground(bench, port, samples)
+    bench.run(25)
+    actual = bench.read_host(port).replace(speed_report(1), b'')
+    assert_bytes(actual, prefix + b'\xf7' + clean, 'coalesced DIN gaps')
+    assert not bench.read_host(3 - port)
+    bench.assert_no_loss()
+    print(f'port {port}: two queued faults coalesced; first note between faults discarded, '
+          'next Note On exact', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     replay_args(parser)
@@ -66,8 +89,12 @@ def main():
     bench.status(1)
     if args.port in (None, 1):
         check_gap(bench, 1, records[0], records[2], 33, 0x10)
+        check_gap(bench, 1, records[0], records[2], 34, 0x10)
+        check_coalesced_gaps(bench, 1)
     if args.port in (None, 2):
         check_gap(bench, 2, records[1], records[3], 306, 0x08)
+        check_gap(bench, 2, records[1], records[3], 308, 0x08)
+        check_coalesced_gaps(bench, 2)
 
 
 if __name__ == '__main__':

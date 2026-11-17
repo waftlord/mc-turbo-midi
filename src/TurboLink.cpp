@@ -85,7 +85,7 @@ void TurboLink::stop(uint32_t now, uint8_t restartLimit, bool failed, bool waitF
   // Stop keepalives so the peer can time out.
   if (state_ == State::Recovering) return;
   const bool peerMayHaveSwitched = wireSpeed_ != normalSpeed ||
-                                   state_ == State::WaitAck ||
+                                   state_ == State::WaitAck || state_ == State::SendTest1 ||
                                    state_ == State::DrainAck;
   if (peerMayHaveSwitched) {
     recover(now, waitForPeer ? recoveryInterval : 0);

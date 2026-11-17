@@ -23,6 +23,7 @@ HOOKS = {
     0x06F0: (".uart_midi_hook", "62 e1 7a e7 80 e0 90 e0 8b dd"),
     0x0D14: (".midi_string_hook", "99 27 81 30"),
     0x0D5A: (".midi_desc_hook", "85 e6 90 e0"),
+    0x0DF2: (".usb_config_hook", "10 93 6d 02"),
     0x0F9E: (".timer_keepalive_hook", "f1 db"),
     0x1212: (".cdc_rx_hook", "60 91 ce 00"),
     0x133A: (".cdc_poll_hook", "9f b7 f8 94 80 91 dc 01 9f bf"),

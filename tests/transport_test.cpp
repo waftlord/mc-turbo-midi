@@ -92,6 +92,37 @@ void testControlIsolation() {
     assert(filter(MidiSide::Din, panel).forwarded == panel);
 }
 
+void testRealtimeInsideControlPrefix() {
+    for (auto side : {MidiSide::Usb, MidiSide::Din}) {
+        ControlFilter parser(side);
+        Bytes wire;
+        std::vector<Bytes> controls;
+        const auto forward = [&](uint8_t byte) { wire.push_back(byte); };
+        const auto control = [&](const uint8_t *frame, uint8_t size) {
+            controls.emplace_back(frame, frame + size);
+        };
+        const auto feed = [&](const Bytes &data, uint32_t now) {
+            for (auto byte : data) parser.accept(byte, now, forward, control);
+        };
+        const Bytes ordinary{0xf0, 0, 0x20, 0xf8, 0x3c, 0xfa, 2, 0, 0xf7};
+        feed(ordinary, 0);
+        assert(wire == ordinary && controls.empty());
+
+        // An unfinished prefix cannot indefinitely delay realtime. Exercise
+        // the two-ms deadline across millis rollover and an excess clock burst.
+        wire.clear();
+        feed({0xf0, 0, 0x20, 0xf8}, UINT32_MAX);
+        parser.expire(1, forward);
+        assert(wire == Bytes{0xf8});
+        feed({0x3c, 0xf8, 0xfa, 0xfb, 0xfc, 0xff}, 2);
+        const bool usb = side == MidiSide::Usb;
+        feed({static_cast<uint8_t>(usb ? 4 : 0), 0,
+              static_cast<uint8_t>(usb ? 1 : 0x10), 0xf7}, 2);
+        assert((wire == Bytes{0xf8, 0xf8, 0xfa, 0xfb, 0xfc, 0xff}));
+        assert(controls.size() == 1);
+    }
+}
+
 void testInterruptedMidi() {
     MidiPacketizer parser;
     std::vector<Bytes> events;
@@ -105,7 +136,7 @@ void testInterruptedMidi() {
                                          {0x19, 0x90, 61, 91}}));
     events.clear();
     feed({0xf0, 1, 2, 3, 0xf1, 0x37, 0x60});
-    assert((events == std::vector<Bytes>{{0x14, 0xf0, 1, 2}, {0x15, 0xf7, 0, 0},
+    assert((events == std::vector<Bytes>{{0x14, 0xf0, 1, 2}, {0x16, 3, 0xf7, 0},
                                          {0x12, 0xf1, 0x37, 0}}));
     events.clear();
     feed({0xf0, 1, 2, 3});
@@ -381,6 +412,34 @@ void testSimultaneousRequestsSettleAndCanBeRetried() {
     assert(first.speed() == 4 && peer.speed() == 4);
 }
 
+void testCancelAfterPeerAcknowledges() {
+    endpoints[0] = Endpoint{};
+    TurboLink link(send<0>, idle, setRate<0>, report<0>);
+    link.setLimit(4, 0);
+    link.tick(0);
+    const auto answer = message(0, {0x11, 0x25, 0, 0x25, 0});
+    assert(link.receive(answer.data(), answer.size(), 4));
+    link.tick(4);
+    const auto ack = message(0, {0x13});
+    assert(link.receive(ack.data(), ack.size(), 8));
+    endpoints[0].tx.clear();
+    // The peer can already be at 4x when a host cancels before the
+    // foreground sends Test1. Keep the DIN wire quiet for the peer timeout.
+    link.setLimit(1, 8);
+    assert(link.recovering() && link.pausePayload());
+    link.tick(8);
+    link.setLimit(2, 12);
+    link.tick(357);
+    assert(link.recovering() && endpoints[0].tx.empty());
+    link.tick(358);
+    link.tick(359);
+    assert(endpoints[0].tx == message(0, {0x10}));
+    // An answer supporting only a rate outside our cap leaves 1x usable.
+    const auto unsupported = message(0, {0x11, 0x20, 0, 0x20, 0});
+    assert(link.receive(unsupported.data(), unsupported.size(), 363));
+    assert(link.failed() && !link.busy() && link.speed() == 1);
+}
+
 void testNoFinalRateConfirmationRetriesLower() {
     for (auto &endpoint : endpoints) endpoint = Endpoint{};
     TurboLink initiator(send<0>, idle, setRate<0>, report<0>);
@@ -406,8 +465,10 @@ void testNoFinalRateConfirmationRetriesLower() {
 int main() {
     testForwarding();
     testControlIsolation();
+    testRealtimeInsideControlPrefix();
     testInterruptedMidi();
     testIndependentTurboAndFallback();
+    testCancelAfterPeerAcknowledges();
     testTwoDifferentRates();
     testIndependentFinalRateConfirmation();
     testFastTestSerial();
