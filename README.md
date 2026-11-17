@@ -6,14 +6,14 @@
 
 ## Install on MegaCommand DIY
 
-The bridge replaces the full MCL application. Each candidate package contains both application images in `build/`. Unpack the package and open a terminal in the folder containing `SHA256SUMS`. On macOS run `shasum -a 256 -c SHA256SUMS`. On Linux run `sha256sum -c SHA256SUMS`. Both files should report **OK**. On Windows, run `Get-FileHash -Algorithm SHA256 .\build\*.hex | Format-List Path,Hash` in PowerShell and compare each result with the corresponding line in `SHA256SUMS`. Keep the two images and the manifest together. The flat assets attached to a published release use that release's own manifest.
+The bridge replaces the full MCL application. Download the complete v1.0.2 package from the [GitHub release](https://github.com/waftlord/mc-turbo-midi/releases/tag/v1.0.2). It contains both application images in `build/`. Unpack the package and open a terminal in the folder containing `SHA256SUMS`. On macOS run `shasum -a 256 -c SHA256SUMS`. On Linux run `sha256sum -c SHA256SUMS`. Both files should report **OK**. On Windows, run `Get-FileHash -Algorithm SHA256 .\build\*.hex | Format-List Path,Hash` in PowerShell and compare each result with the corresponding line in `SHA256SUMS`. Keep the two images and the manifest together. The flat assets attached to a published release use that release's own manifest.
 
 For an offline install, have AVRDUDE available for the 2560 serial upload and `dfu-programmer` on macOS/Linux for the 16U2. Windows users also need the official USB bundle's DFU driver and tool. Keep an extracted copy of the USB bundle for serial recovery and the stock USB image. Download the full MCL application as well if you plan to restore it. [Official MCL 5.02 application and USB downloads](https://github.com/jmamma/MCL/releases/tag/5.02)
 
 | What is installed now? | What to flash |
 | --- | --- |
 | Full MCL or a stock USB-to-serial Mega 2560 DIY | Upload the 2560 application, then install the dual-port 16U2 image using hardware DFU. |
-| Dual bridge v1.0.0 or v1.0.1 with its matched USB firmware | Upload the 2560 application, then install the candidate 16U2 image using hardware DFU. Both releases shipped the same older USB image. The candidate also updates USB control handling under load. |
+| Dual bridge v1.0.0 or v1.0.1 with its matched USB firmware | Upload the 2560 application, then install the v1.0.2 16U2 image using hardware DFU. Both releases shipped the same older USB image. This update also fixes USB control handling under load. |
 | Prior audit candidate with verified 16U2 image `85941b0d…` | Upload the new ATmega2560 application. The current pair uses the same verified 16U2 HEX as the earlier audit and OLED candidates. |
 | Unknown or mismatched pair | Use the 2560 serial and 16U2 hardware DFU steps below to establish a known pair. |
 
@@ -30,8 +30,8 @@ For an offline install, have AVRDUDE available for the 2560 serial upload and `d
 
 **Install the ATmega16U2 using hardware DFU**
 
-1. Open `install/megacommand_diy_enter_dfu_mode.jpg` in the extracted candidate package. This is the original marked header photo from Justin Mammarella's USB bundle. If using a source checkout, extract the same-named photo from the official download. With the DIY board connected, locate the **USB controller's ICSP header** shown in the photo. Momentarily connect its marked **RESET** and **GND**, then release. The host should enumerate an ATmega16U2 DFU device. The OLED is driven by the other processor. [Official USB firmware bundle](https://github.com/jmamma/MCL/releases/download/5.02/megacmd_usb_dfu_1.0.4.zip)
-2. On macOS or Linux with `dfu-programmer`, run the following from the candidate package directory. Proceed from one command to the next after each succeeds. Flash validates the programmed image by default. On Windows follow the bundle's **MegaCommand DIY** instructions with its `Atmega16U2` target, substituting the candidate 16U2 HEX at the flash step.
+1. Open `install/megacommand_diy_enter_dfu_mode.jpg` in the extracted release package. This is the original marked header photo from Justin Mammarella's USB bundle. If using a source checkout, extract the same-named photo from the official download. With the DIY board connected, locate the **USB controller's ICSP header** shown in the photo. Momentarily connect its marked **RESET** and **GND**, then release. The host should enumerate an ATmega16U2 DFU device. The OLED is driven by the other processor. [Official USB firmware bundle](https://github.com/jmamma/MCL/releases/download/5.02/megacmd_usb_dfu_1.0.4.zip)
+2. On macOS or Linux with `dfu-programmer`, run the following from the candidate package directory. Proceed from one command to the next after each succeeds. Flash validates the programmed image by default. On Windows follow the bundle's **MegaCommand DIY** instructions with its `Atmega16U2` target, substituting the v1.0.2 16U2 HEX at the flash step.
 
    ```sh
    dfu-programmer atmega16u2 get bootloader-version
@@ -54,7 +54,7 @@ Each port shows its settled DIN rate in large type. **READY** means the bridge c
 **If an upload fails**
 
 - If the serial port is present, close any other uploader or serial monitor, reselect **MegaCommand DIY** and the port, then write the complete 2560 image again at 115200 baud. AVRDUDE's Wiring protocol toggles DTR to enter the serial bootloader. Release PAGE for the normal restart.
-- If USB MIDI is still present and the bridge runs, repeat the PAGE-held startup. If the application no longer starts and serial is unavailable, enter **16U2 hardware DFU** as above. Flash the official bundle's `usb_serial.hex` temporarily, reconnect USB, then upload and verify the full 2560 image using the serial port. Finally restore the candidate 16U2 HEX with hardware DFU and reconnect normally. This path assumes an intact 2560 serial bootloader and a working 16U2 DFU bootloader.
+- If USB MIDI is still present and the bridge runs, repeat the PAGE-held startup. If the application no longer starts and serial is unavailable, enter **16U2 hardware DFU** as above. Flash the official bundle's `usb_serial.hex` temporarily, reconnect USB, then upload and verify the full 2560 image using the serial port. Finally restore the v1.0.2 16U2 HEX with hardware DFU and reconnect normally. This path assumes an intact 2560 serial bootloader and a working 16U2 DFU bootloader.
 - If the 16U2 flash was interrupted, re-enter its hardware DFU mode and repeat the erase and validated flash. If the host lists one MIDI pair after a successful install, restart the MIDI client and reselect its endpoints. On macOS a fresh configuration in Audio MIDI Setup → MIDI Studio can expose both pairs when an old single-port configuration is cached.
 
 **Restore full MCL**
@@ -65,6 +65,6 @@ Enter PAGE-held serial update mode and write the full MCL application (for examp
 
 With PlatformIO Core and Python 3.9+, download `megacmd_usb_dfu_1.0.4.zip` from [MCL 5.00](https://github.com/jmamma/MCL/releases/tag/5.00), then run `python3 tools/build_package.py --bundle /path/to/megacmd_usb_dfu_1.0.4.zip`.
 
-See the [candidate audit and measurements](AUDIT.md), [v1.0.1 SysEx bench results](BENCH_SYSEX.md) and [regression instructions](tests/README.md).
+See the [firmware audit and measurements](AUDIT.md), [v1.0.1 SysEx bench results](BENCH_SYSEX.md) and [regression instructions](tests/README.md).
 
 [License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)
