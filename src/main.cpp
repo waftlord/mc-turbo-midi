@@ -27,7 +27,9 @@ namespace {
 
 constexpr uint8_t noLimit = 0xff;
 constexpr uint16_t initialCredit = BRIDGE_DIN_CREDIT;
-constexpr uint16_t sysexStartWatermark = 7168;
+// The extra four interleaved host banks supply 96 bytes per DIN port.
+// This covers the measured refill gap when USB control reads overlap a dump.
+constexpr uint16_t sysexStartWatermark = 7168 + 96;
 constexpr uint16_t controlIdleTimeout = 750;
 constexpr uint16_t toHostSize = 8192;
 constexpr uint16_t toDinSize = 8192;
@@ -74,18 +76,24 @@ public:
     }
     void pop() { tail_ = (tail_ + 1) & mask_; }
     uint8_t copySysExData(FastUart &uart, uint8_t &head, uint8_t limit) {
-        const uint16_t queued = size();
-        const uint8_t available = queued < limit ? queued : limit;
-        uint16_t cursor = tail_;
-        uint8_t count = 0;
-        while (count < available) {
-            const uint8_t byte = bytes_[cursor];
-            if (byte >= 0x80) break;
-            uart.tx[head++] = byte;
-            ++count;
-            cursor = (cursor + 1) & mask_;
+        uint16_t available = size();
+        // Stop before either ring wraps. serviceDin handles the remaining
+        // bytes and status changes in order with the unused UART capacity.
+        const uint16_t contiguous = mask_ + 1 - tail_;
+        if (available > contiguous) available = contiguous;
+        if (available > limit) available = limit;
+        const uint16_t txSpan = 256u - head;
+        if (available > txSpan) available = txSpan;
+        uint8_t *destination = uart.tx + head;
+        const uint8_t *source = bytes_ + tail_;
+        const uint8_t *end = source + available;
+        const uint8_t *cursor = source;
+        while (cursor != end && *cursor < 0x80) {
+            *destination++ = *cursor++;
         }
-        tail_ = cursor;
+        const uint8_t count = cursor - source;
+        tail_ = (tail_ + count) & mask_;
+        head += count;
         return count;
     }
     void pushThree(const uint8_t *bytes) {
@@ -110,6 +118,11 @@ public:
         out[3] = event[3];
         head_ = (head_ + 4) & mask_;
     }
+    const uint8_t *peekHalfBank() const {
+        constexpr uint8_t bytes = BRIDGE_DEVICE_BANK / 2;
+        return size() >= bytes && tail_ <= mask_ + 1 - bytes ? bytes_ + tail_ : nullptr;
+    }
+    void consumeHalfBank() { tail_ = (tail_ + BRIDGE_DEVICE_BANK / 2) & mask_; }
     void popEvent(uint8_t *event) {
         const uint8_t *in = bytes_ + tail_;
         event[0] = in[0];
@@ -861,6 +874,50 @@ __attribute__((noinline)) void serviceUsbOut(uint32_t now) {
     // While a stream is running, coalesce partial banks for up to one millisecond.
     static uint32_t lastBank = 0;
     if (queued < BRIDGE_DEVICE_BANK && now == lastBank) return;
+    // A full alternating compact bank is common under bidirectional load.
+    // Build directly in the UART ring, publishing indices only after all
+    // headers and data pass validation. An even number of alternating events
+    // leaves nextPort unchanged. A mixed bank or queue wrap falls through
+    // with both queue tails and the published UART head intact.
+    Queue &first = ports[nextPort].toHost;
+    Queue &second = ports[nextPort ^ 1].toHost;
+    const uint8_t *firstEvent = first.peekHalfBank();
+    const uint8_t *secondEvent = second.peekHalfBank();
+    if (firstEvent && secondEvent) {
+        uint8_t head = usbUart.txHead;
+        appendUsbByte(head, BRIDGE_START);
+        appendUsbByte(head, BRIDGE_SYSEX);
+        appendUsbByte(head, BRIDGE_DEVICE_BANK);
+        uint8_t crc = bridgeCrc(bridgeCrc(0, BRIDGE_SYSEX), BRIDGE_DEVICE_BANK);
+        uint8_t count = 0;
+        for (; count < BRIDGE_DEVICE_BANK / 4; ++count) {
+            const uint8_t *event = firstEvent;
+            if (count & 1) {
+                event = secondEvent;
+                secondEvent += 4;
+            } else {
+                firstEvent += 4;
+            }
+            if ((event[0] & 15) != 4 || (event[1] | event[2] | event[3]) >= 0x80) break;
+            const uint8_t tagged = event[1] | ((event[0] & 16) << 3);
+            appendUsbEscaped(head, tagged);
+            crc = bridgeCrc(crc, tagged);
+            appendUsbByte(head, event[2]);
+            crc = bridgeCrc(crc, event[2]);
+            appendUsbByte(head, event[3]);
+            crc = bridgeCrc(crc, event[3]);
+        }
+        if (count == BRIDGE_DEVICE_BANK / 4) {
+            appendUsbEscaped(head, crc);
+            first.consumeHalfBank();
+            second.consumeHalfBank();
+            --returnBatchCredits;
+            lastBank = now;
+            usbUart.txHead = head;
+            ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { UCSR0B |= _BV(UDRIE0); }
+            return;
+        }
+    }
     uint8_t data[BRIDGE_BANK];
     uint8_t length = 0;
     uint8_t sysexInBank = 0;

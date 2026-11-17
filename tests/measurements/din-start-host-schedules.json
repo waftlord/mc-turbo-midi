@@ -1,0 +1,18 @@
+{
+  "model": "Paired AVR, same dual-8x four-way stress fixture as tests/profile_avr.py.",
+  "installed_hex": {"megacommand-diy-dual-atmega16u2-dfu.hex": "85941b0d4a84c804a2166eabf48617e059c6cfed9650e85a22aaa72806ef10df", "megacommand-diy-dual-atmega2560-update.hex": "56c423d0368c1cdfd95d1364700e87129800b00f611f99295e5f220c1a8ed8a4"},
+  "candidate_hex": {"megacommand-diy-dual-atmega16u2-dfu.hex": "85941b0d4a84c804a2166eabf48617e059c6cfed9650e85a22aaa72806ef10df", "megacommand-diy-dual-atmega2560-update.hex": "6609857281a10676eb6460ae723687ebc29222d9ad7a450d8220a16a85398481"},
+  "columns": ["first_ms", "p99_payload_gap_us", "max_payload_gap_us"],
+  "cases": [
+    {"host_in_stall_ms": 127, "first_device_descriptor_ms": null, "installed": {"p1": [1017.396, 740.125, 2052.188], "p2": [1019.166, 723.375, 1991.875]}, "candidate": {"p1": [913.46, 658.562, 1900.562], "p2": [915.861, 616.812, 1823.688]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": null, "installed": {"p1": [1030.238, 727.688, 2034.25], "p2": [1032.008, 721.75, 1973.75]}, "candidate": {"p1": [915.977, 660.312, 1828.312], "p2": [918.373, 640.0, 1895.5]}},
+    {"host_in_stall_ms": 129, "first_device_descriptor_ms": null, "installed": {"p1": [1016.552, 732.688, 2058.0], "p2": [1018.322, 722.312, 1992.375]}, "candidate": {"p1": [913.416, 657.25, 1886.375], "p2": [915.817, 634.812, 1758.812]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": 7, "installed": {"p1": [1019.408, 734.812, 2041.312], "p2": [1021.178, 725.375, 1975.438]}, "candidate": {"p1": [913.035, 659.688, 1783.125], "p2": [915.432, 634.125, 1843.062]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": 8, "installed": {"p1": [1027.694, 728.625, 2033.438], "p2": [1029.457, 718.938, 1965.25]}, "candidate": {"p1": [916.061, 654.438, 1909.625], "p2": [918.458, 616.312, 1907.312]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": 9, "installed": {"p1": [1021.468, 731.438, 2136.375], "p2": [1023.238, 721.75, 2073.312]}, "candidate": {"p1": [913.955, 657.875, 1805.562], "p2": [916.352, 635.312, 1856.938]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": 10, "installed": {"p1": [1021.468, 730.938, 2052.125], "p2": [1023.238, 720.312, 1975.812]}, "candidate": {"p1": [914.656, 657.5, 1820.375], "p2": [917.053, 632.5, 1882.688]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": 11, "installed": {"p1": [975.644, 781.75, 2111.938], "p2": [977.407, 758.25, 2046.75]}, "candidate": {"p1": [856.05, 704.438, 1839.312], "p2": [858.447, 701.562, 1907.062]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": 12, "installed": {"p1": [1020.669, 730.125, 2043.25], "p2": [1022.432, 722.25, 1978.125]}, "candidate": {"p1": [913.522, 657.625, 1865.0], "p2": [915.923, 646.75, 1854.688]}},
+    {"host_in_stall_ms": 128, "first_device_descriptor_ms": 13, "installed": {"p1": [1015.594, 734.188, 2039.375], "p2": [1017.357, 727.125, 1970.812]}, "candidate": {"p1": [923.421, 664.625, 1862.5], "p2": [925.834, 646.25, 1936.062]}}
+  ]
+}

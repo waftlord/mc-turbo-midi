@@ -14,7 +14,7 @@ For an offline install, have AVRDUDE available for the 2560 serial upload and `d
 | --- | --- |
 | Full MCL or a stock USB-to-serial Mega 2560 DIY | Upload the 2560 application, then install the dual-port 16U2 image using hardware DFU. |
 | Dual bridge v1.0.0 or v1.0.1 with its matched USB firmware | Upload the 2560 application, then install the candidate 16U2 image using hardware DFU. Both releases shipped the same older USB image. The candidate also updates USB control handling under load. |
-| Prior audit candidate with verified 16U2 image `85941b0d…` | Upload the new ATmega2560 application. This display update uses the same 16U2 HEX. |
+| Prior audit candidate with verified 16U2 image `85941b0d…` | Upload the new ATmega2560 application. The current pair uses the same verified 16U2 HEX as the earlier audit and OLED candidates. |
 | Unknown or mismatched pair | Use the 2560 serial and 16U2 hardware DFU steps below to establish a known pair. |
 
 **Upload the ATmega2560 application**

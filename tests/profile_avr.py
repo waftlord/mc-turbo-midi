@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 
 from avr_model import CIN_LENGTH, UsbAvr
+from active_usb_setup import DescriptorReads
 from paired_avr_replay import Bench, PROJECT, byte_cycles, replay_args, replay_records
 
 
@@ -209,8 +210,13 @@ def profile(args):
     bench.usb.in_banks = TimedInBanks(bench.usb, usb_in)
     bench.usb.host_out = TimedOutBanks(bench.usb, usb_out)
     bench.usb.max_tx_count = 0
-    bench.replay(records, (1, 2), 128 if args.case == 'stress' else 0, realtime=True)
+    reader = DescriptorReads(bench.usb, args.first_descriptor_ms) if args.first_descriptor_ms is not None else None
+    bench.replay(records, (1, 2), args.stall_ms, realtime=True)
     metrics = {}
+    if reader:
+        reader.completed()
+        metrics['device_descriptor_reads'] = reader.responses
+        metrics['first_descriptor_ms'] = args.first_descriptor_ms
     for port in (1, 2):
         reads = event_times(usb_in, port - 1)
         host_out = event_times(usb_out, port - 1)
@@ -235,6 +241,7 @@ def profile(args):
     metrics['queue_high_water_bytes'] = {**tracker.peaks, 'usb_link_tx_exact': bench.usb.max_tx_count}
     metrics['main_queue_samples'] = tracker.samples
     metrics['case'] = args.case
+    metrics['host_in_stall_ms'] = args.stall_ms
     metrics['sha256'] = {image.name: hashlib.sha256(image.read_bytes()).hexdigest() for image in sorted(
         args.images.glob('megacommand-diy-dual-atmega*.hex'))}
     return metrics
@@ -246,11 +253,37 @@ def main():
     parser.add_argument('--elf', type=Path, default=PROJECT / '.pio/build/megacommand_diy/firmware.elf',
                         help='matching ATmega2560 ELF for symbol lookup')
     parser.add_argument('--case', choices=['stress', '8x'], default='stress')
+    parser.add_argument('--stall-ms', type=int, help='host IN pause in ms (stress default 128, short default 0)')
+    parser.add_argument('--first-descriptor-ms', type=int,
+                        help='issue a device descriptor request at this offset, then every 31 ms')
+    parser.add_argument('--check-stress-against', type=Path,
+                        help='require first byte, p99 and largest DIN gap to match or beat this stress profile')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.capture and args.case != '8x':
         parser.error('use --case 8x to profile a supplied capture')
-    args.output.write_text(json.dumps(profile(args), indent=2) + '\n')
+    if args.stall_ms is None:
+        args.stall_ms = 128 if args.case == 'stress' else 0
+    if args.stall_ms < 0 or (args.first_descriptor_ms is not None and args.first_descriptor_ms < 0):
+        parser.error('time offsets must be nonnegative')
+    baseline = None
+    if args.check_stress_against:
+        baseline = json.loads(args.check_stress_against.read_text())
+        if (args.case != 'stress' or baseline['case'] != 'stress' or
+                baseline.get('host_in_stall_ms', 128) != args.stall_ms or
+                baseline.get('first_descriptor_ms') != args.first_descriptor_ms):
+            parser.error('the reference must use the same stress workload, stall and descriptor schedule')
+    measured = profile(args)
+    args.output.write_text(json.dumps(measured, indent=2) + '\n')
+    if baseline:
+        for port in ('p1', 'p2'):
+            for field, quantile in (('first_usb_out_bank_to_first_din_byte_us', None),
+                                    ('within_record_din_gap_us', 'p99'), ('within_record_din_gap_us', 'max')):
+                actual, limit = measured[port][field], baseline[port][field]
+                if quantile:
+                    actual, limit = actual[quantile], limit[quantile]
+                if actual > limit:
+                    parser.exit(1, f'{port} {field} {quantile or ""}: {actual} µs exceeds {limit} µs\n')
 
 
 if __name__ == '__main__':

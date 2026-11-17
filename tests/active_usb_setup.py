@@ -40,10 +40,10 @@ class UsbStackGuard:
 
 
 class DescriptorReads:
-    def __init__(self, usb):
+    def __init__(self, usb, first_read_ms=10):
         self.usb = usb
         self.expected = usb.flash_bytes(0x117, 18)
-        self.deadline = usb.cycles + 10 * CYCLES_PER_MS
+        self.deadline = usb.cycles + first_read_ms * CYCLES_PER_MS
         self.start = None
         self.responses = 0
         self.advance = usb.advance

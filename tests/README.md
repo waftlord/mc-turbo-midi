@@ -31,6 +31,12 @@ Build each revision with its matching 2560 ELF. Run the same copy of the harness
 python3 -B tests/profile_avr.py --case stress --output /tmp/dual-turbo-profile.json
 ```
 
+The timing regression compares the first DIN byte, p99 and maximum within-record gap on each port against the installed OLED build. Any value above its reference fails the command. To compare nearby host schedules, use `--stall-ms 127` or `--stall-ms 129`. Add `--first-descriptor-ms 10` to start periodic USB control reads 10 ms into the transfer. Generate a reference under that same schedule before comparing it.
+
+```sh
+python3 -B tests/profile_avr.py --case stress --check-stress-against tests/measurements/1fd2dc4-stress.json --output /tmp/candidate-stress.json
+```
+
 The four transfers start together. Throughput for a direction includes initial buffering from submission until the last byte arrives. Each DIN-to-host latency starts at the scheduled end of a DIN byte and ends at the host's IN poll. Each host-to-DIN latency starts when that USB OUT bank enters the endpoint and ends when its DIN byte leaves the modeled shift register. It omits time a bank waits in the host's submission queue. Gap statistics use consecutive payload bytes within a record, including interleaved user realtime and excluding the bridge's active sensing. Percentiles use nearest rank.
 
 CPU totals cover the replay and its 12 ms drain. Both processors poll continuously. The profiler counts instruction cycles and vector-entry time, attributes IRQ and foreground cycles separately, and measures maximum observed ISR duration. It samples the 2560 queues on entry and return from `serviceUsbOut` to avoid reading a half-updated 16-bit index. Those high-water values are lower bounds. The 16U2 TX ring counter is observed on every write. SRAM margin uses the lowest modeled stack pointer since boot and reserved static memory. These timings assume the model's interrupt, XMEM, SPI and endpoint behavior and 1 ms host polling. They measure neither real-time host scheduling nor a hardware worst-case stack bound.
@@ -48,6 +54,26 @@ The peer replay uses the matched HEX pair. It checks the next clean SysEx, runni
 The panel probe compiles the renderer for the ATmega2560 and checks the OLED pixels for both ports, the LEDs, and SPI traffic after each activity edge. It tests cap previews through independent expiry, a repeated edit and millisecond timer wrap. Pass `--source /path/to/other/src` to compare another revision. The probe models an immediately ready SPI peripheral.
 
 The panel controls replay runs the production HEX pair. It checks that the read-only speed query leaves both ports READY with quiet DIN outputs. It then applies a USB cap and operates SAVE and LOAD through the modeled shift register, verifies the affected OLED column and expiry, exercises failed negotiation, and compares fresh notes on both routes.
+
+### Comparing first byte and DIN gaps
+
+Run the public short and stress profiles against both matching pairs. The first timestamp is when the USB OUT endpoint admits the bank containing that cable's first F0. The second is the completion of that byte at its DIN shift register. The host IN stall starts at submission; host OUT continues. A mixed USB bank may contain the initial bytes for both ports.
+
+```sh
+python3 -B tests/din_start_sweep.py --images /path/to/installed/build --full > /tmp/installed-din.jsonl
+python3 -B tests/din_start_sweep.py --images build --full --baseline /tmp/installed-din.jsonl
+```
+
+The sweep compares 14 schedules covering mixed rates, one or two active transmitters, staggered host banks, host IN stalls, and different record sizes. It checks both byte streams and reports first byte, p99, maximum within-record gap and completion time per port. The uninterrupted-wire lower bound accounts for the actual USB bank admission schedule. Gap figures exclude the bridge's Active Sensing bytes; a gap between payload bytes can include an intervening FE on the wire.
+
+To trace the original startup delay, run the same host and peer schedule on each matched pair. The trace decodes the two internal UART directions, checks frame CRCs, matches each group of events to its original USB OUT bank and timestamps both DIN outputs.
+
+```sh
+python3 -B tests/prefill_trace.py --images /path/to/installed/build --images build
+python3 -B tests/compact_bank_replay.py --images build --elf .pio/build/megacommand_diy/firmware.elf
+```
+
+The second command puts the compiled bank encoder through all 16 possible positions for an interrupting clock, plus a full bank of ordinary continuation events. It repeats each case with both starting ports and two external-ring positions while a previous UART frame is still draining. It checks byte order, the exact USB bank split and the return of both frame credits.
 
 ### USB transport and fault recovery
 
