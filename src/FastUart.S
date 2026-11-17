@@ -79,6 +79,19 @@
     ldi r19, 0x80
 2:
     lds r18, \uart + 4
+.if \extended
+    /* Mark the gap between valid queued bytes. A burst of errors before
+       the reader reaches the gap extends it through the most recent loss. */
+    lds r30, \uart
+    lds r31, \uart + UART_RX_EPOCH
+    sts \uart + UART_LAST_RX_LOSS, r30
+    sts \uart + UART_LAST_RX_LOSS + 1, r31
+    tst r18
+    brne .LextendLoss\@
+    sts \uart + UART_FIRST_RX_LOSS, r30
+    sts \uart + UART_FIRST_RX_LOSS + 1, r31
+.LextendLoss\@:
+.endif
     or r19, r18
     sts \uart + 4, r19
     rjmp 1f

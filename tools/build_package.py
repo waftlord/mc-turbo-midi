@@ -27,7 +27,7 @@ def build(bundle: Path, output: Path, pio: str) -> None:
         for folder in ("src", "tools", "examples", "tests", "LICENSES"):
             shutil.copytree(ROOT / folder, snapshot / folder,
                             ignore=shutil.ignore_patterns(".DS_Store", "__pycache__"))
-        for name in ("README.md", "PROTOCOL.md",
+        for name in ("README.md", "PROTOCOL.md", "BENCH_SYSEX.md",
                      "LICENSE", "THIRD_PARTY_NOTICES.md", "platformio.ini"):
             shutil.copy2(ROOT / name, snapshot / name)
 

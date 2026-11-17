@@ -1,6 +1,7 @@
 #pragma once
 
 #include <avr/io.h>
+#include <util/atomic.h>
 #include <string.h>
 #include "FastUartLayout.h"
 #include <stdint.h>
@@ -13,6 +14,7 @@ struct FastUart {
     volatile uint8_t rxEpoch, tailEpoch;
     uint8_t *extendedRx;
     volatile uint8_t testIdle, testTxDrain;
+    volatile uint16_t firstRxLoss, lastRxLoss;
 
     bool read(uint8_t &byte) {
         if (rxTail == rxHead) return false;
@@ -28,15 +30,32 @@ struct FastUart {
         epoch = rxEpoch;
         SREG = saved;
         const uint16_t position = (uint16_t(tailEpoch) << 8) | rxTail;
-        const uint16_t end = (uint16_t(epoch) << 8) | head;
-        return end >= position ? end - position : DIN_RX_SIZE - position + end;
+        return distance(position, (uint16_t(epoch) << 8) | head);
     }
 
-    uint8_t readDin(uint8_t *bytes, uint8_t budget) {
-        const uint16_t used = dinReadable();
+    // A batch ends before the first loss. On the next read, surface the
+    // error separately and leave the bytes after the last loss queued.
+    uint8_t readDin(uint8_t *bytes, uint8_t budget, uint8_t &fault) {
+        const uint16_t position = (uint16_t(tailEpoch) << 8) | rxTail;
+        uint16_t end;
+        fault = 0;
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+            if (error) {
+                end = firstRxLoss;
+                if (position == end) {
+                    fault = error;
+                    rxTail = lastRxLoss;
+                    tailEpoch = lastRxLoss >> 8;
+                    error = 0;
+                    return 0;
+                }
+            } else {
+                end = (uint16_t(rxEpoch) << 8) | rxHead;
+            }
+        }
+        const uint16_t used = distance(position, end);
         const uint8_t count = used < budget ? used : budget;
         if (!count) return 0;
-        const uint16_t position = (uint16_t(tailEpoch) << 8) | rxTail;
         const uint16_t remaining = DIN_RX_SIZE - position;
         if (remaining >= count) memcpy(bytes, extendedRx + position, count);
         else {
@@ -53,6 +72,11 @@ struct FastUart {
     }
 
     uint8_t writable() const { return static_cast<uint8_t>(txTail - txHead - 1); }
+
+private:
+    static uint16_t distance(uint16_t start, uint16_t end) {
+        return end >= start ? end - start : DIN_RX_SIZE - start + end;
+    }
 };
 
 extern "C" FastUart usbUart, midiUart1, midiUart2;

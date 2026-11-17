@@ -18,7 +18,9 @@ volatile uint8_t fastTestUart;
 static_assert(offsetof(FastUart, rx) == 5 && offsetof(FastUart, tx) == UART_TX_BUFFER &&
               offsetof(FastUart, rxEpoch) == UART_RX_EPOCH && offsetof(FastUart, tailEpoch) == UART_TAIL_EPOCH &&
               offsetof(FastUart, testIdle) == UART_TEST_IDLE &&
-              offsetof(FastUart, testTxDrain) == UART_TEST_TX_DRAIN,
+              offsetof(FastUart, testTxDrain) == UART_TEST_TX_DRAIN &&
+              offsetof(FastUart, firstRxLoss) == UART_FIRST_RX_LOSS &&
+              offsetof(FastUart, lastRxLoss) == UART_LAST_RX_LOSS,
               "Keep the assembly queue layout in sync");
 
 namespace {
@@ -448,52 +450,49 @@ struct Port {
 
     __attribute__((noinline)) void readDin(uint32_t now) {
         const bool testing = fastTest();
-        uint8_t error;
-        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-            error = uart.error;
-            uart.error = 0;
-            if (error && (testing || inputSeen || error != _BV(FE0))) {
-                // The queue has no marker for the position of a lost byte.
-                uart.rxTail = uart.rxHead;
-                uart.tailEpoch = uart.rxEpoch;
-            }
-        }
-        const bool recovering = turbo.recovering();
-        if (!recovering && error && (testing || inputSeen || error != _BV(FE0))) {
-            inputLoss = true;
-            dinFilter.clear();
-            if (!turbo.reportTransportError(now, error == _BV(FE0))) {
-                fault = error & (0x80 | _BV(DOR0)) ? Panel::Fault::RxFull : Panel::Fault::Din;
-            }
-        }
         recoverInput();
-        if (recovering || turbo.recovering()) {
+        if (turbo.recovering()) {
             // Either peer can return to 1× first. Discard bytes received
             // during that interval, including partial control frames.
             ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
                 uart.rxTail = uart.rxHead;
                 uart.tailEpoch = uart.rxEpoch;
+                uart.error = 0;
             }
             return;
         }
-        const auto forward = [this](uint8_t value) {
-            if (!linkReady || inputLoss || (turbo.pausePayload() && value < 0xf8)) return;
-            if (awaitStatus && value < 0xf8) {
-                if (value < 0x80 || value == 0xf7) return;
-                awaitStatus = false;
+        uint8_t error = 0;
+        if (testing) {
+            ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+                error = uart.error;
+                if (error) {
+                    uart.rxTail = uart.rxHead;
+                    uart.error = 0;
+                }
             }
-            parser.accept(value, number << 4, [this](const uint8_t *event) { packet(event); });
-        };
+        }
         uint8_t input[48];
         const uint16_t free = toHost.free();
         // Until a USB host drains the queues, keep the MIDI bytes in the
         // raw ring. Reserve a few extra events for any held SysEx prefix.
         const uint8_t budget = free >= 4 * (sizeof(input) + 16)
             ? sizeof(input) : free > 64 ? (free - 64) / 4 : 0;
-        if (!budget && linkReady && !turbo.busy()) return;
+        if (!error && !budget && linkReady && !turbo.busy()) return;
         const uint8_t readBudget = budget ? budget : sizeof(input);
-        const uint8_t length = testing ? readFastTest(input, readBudget, now)
-                                       : uart.readDin(input, readBudget);
+        const uint8_t length = testing ? (error ? 0 : readFastTest(input, readBudget, now))
+                                       : uart.readDin(input, readBudget, error);
+        if (!length) dinFilter.expire(now, [this](uint8_t value) { forwardDin(value); });
+        if (error && (testing || inputSeen || error != _BV(FE0))) {
+            inputLoss = true;
+            dinFilter.clear();
+            if (!turbo.reportTransportError(now, error == _BV(FE0))) {
+                fault = error & (0x80 | _BV(DOR0)) ? Panel::Fault::RxFull : Panel::Fault::Din;
+            }
+            recoverInput();
+            return;
+        }
+        if (!length) return;
+        const auto forward = [this](uint8_t value) { forwardDin(value); };
         bool activity = false;
         bool payload = false;
         const uint8_t cable = number << 4;
@@ -534,6 +533,15 @@ struct Port {
         }
         if (payload) lastDinAt = now;
         dinFilter.expire(now, forward);
+    }
+
+    void forwardDin(uint8_t value) {
+        if (!linkReady || inputLoss || (turbo.pausePayload() && value < 0xf8)) return;
+        if (awaitStatus && value < 0xf8) {
+            if (value < 0x80 || value == 0xf7) return;
+            awaitStatus = false;
+        }
+        parser.accept(value, number << 4, [this](const uint8_t *event) { packet(event); });
     }
 
     void cycleLimit(uint32_t now) {
@@ -820,15 +828,22 @@ __attribute__((noinline)) void serviceUsbOut(uint32_t now) {
     if (queued < BRIDGE_DEVICE_BANK && now == lastBank) return;
     uint8_t data[BRIDGE_BANK];
     uint8_t length = 0;
+    uint8_t sysexInBank = 0;
     bool compact = true;
     while (length < BRIDGE_DEVICE_BANK) {
         uint8_t port = nextPort;
         if (ports[port].toHost.empty()) port ^= 1;
         if (ports[port].toHost.empty()) break;
+        const uint8_t cin = ports[port].toHost.front() & 15;
+        const uint8_t cable = 1 << port;
+        // CoreMIDI's legacy byte delivery can insert F7 when realtime follows
+        // same-cable SysEx data in one USB transfer. Start a new bank there.
+        if (cin == 15 && (sysexInBank & cable)) break;
+        if (cin == 4) sysexInBank |= cable;
+        else if (cin >= 5 && cin <= 7) sysexInBank &= ~cable;
         uint8_t *event = data + length;
         ports[port].toHost.popEvent(event);
-        compact &= (event[0] & 15) == 4 &&
-                   (event[1] | event[2] | event[3]) < 128;
+        compact &= cin == 4 && (event[1] | event[2] | event[3]) < 128;
         length += 4;
         nextPort = port ^ 1;
     }
