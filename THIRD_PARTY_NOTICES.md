@@ -9,4 +9,4 @@
 
 Include these notices and license texts with source or binary redistributions as required by the applicable terms.
 
-The USB builder uses the MegaCommand DIY 1.0.4 firmware distributed in the [MCL 5.00 USB DFU bundle](https://github.com/jmamma/MCL/releases/tag/5.00). It applies the patch locally to that upstream image. The project's MIT license covers the original patch code. The upstream firmware retains its applicable terms.
+The USB builder uses the MegaCommand DIY 1.0.4 firmware distributed in the [MCL 5.00 USB DFU bundle](https://github.com/jmamma/MCL/releases/tag/5.00). It applies the patch locally to that upstream image. The package also includes the bundle’s unmodified DIY USB ICSP header photograph, `megacommand_diy_enter_dfu_mode.jpg`, for the hardware DFU instructions. The project's MIT license covers the original patch code. The upstream firmware retains its applicable terms.

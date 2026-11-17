@@ -61,7 +61,7 @@ def compare_legacy(wire, packets, expected):
     return extra_ends, clock_counts
 
 
-def compare_ump(ump, expected):
+def compare_ump(ump, expected, expected_takes=None):
     actual = []
     current = None
     clocks = 0
@@ -91,6 +91,7 @@ def compare_ump(ump, expected):
                     actual.append(record)
                 current = None
     takes, remainder = divmod(len(actual), len(expected))
+    assert expected_takes is None or takes == expected_takes, 'unexpected number of UMP takes'
     assert current is None and takes and not remainder and actual == expected * takes, (
         'UMP SysEx records differ from the control')
     return clocks

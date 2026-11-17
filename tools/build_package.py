@@ -9,13 +9,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from zipfile import ZipFile, ZIP_DEFLATED
+from zipfile import BadZipFile, ZipFile, ZIP_DEFLATED
 
 
 ROOT = Path(__file__).resolve().parent.parent
 USB = "megacommand-diy-dual-atmega16u2-dfu.hex"
 MAIN = "megacommand-diy-dual-atmega2560-update.hex"
 AVR_PACKAGE = "platformio/toolchain-atmelavr@1.70300.191015"
+DFU_PHOTO = "megacommand_diy_enter_dfu_mode.jpg"
+DFU_PHOTO_SHA256 = "c912526e3a8c119729f39ab52ad55c5f88c58f09bad6f2840ec591ec2dcae756"
 
 
 def build(bundle: Path, output: Path, pio: str) -> None:
@@ -27,9 +29,15 @@ def build(bundle: Path, output: Path, pio: str) -> None:
         for folder in ("src", "tools", "examples", "tests", "LICENSES"):
             shutil.copytree(ROOT / folder, snapshot / folder,
                             ignore=shutil.ignore_patterns(".DS_Store", "__pycache__"))
-        for name in ("README.md", "PROTOCOL.md", "BENCH_SYSEX.md",
+        for name in ("README.md", "PROTOCOL.md", "BENCH_SYSEX.md", "AUDIT.md",
                      "LICENSE", "THIRD_PARTY_NOTICES.md", "platformio.ini"):
             shutil.copy2(ROOT / name, snapshot / name)
+        with ZipFile(bundle) as upstream:
+            photo = upstream.read(f"megacmd_usb_dfu_1.0.4/{DFU_PHOTO}")
+        if hashlib.sha256(photo).hexdigest() != DFU_PHOTO_SHA256:
+            raise ValueError("Expected the original MegaCommand DIY DFU header photograph")
+        (snapshot / "install").mkdir()
+        (snapshot / "install" / DFU_PHOTO).write_bytes(photo)
 
         pio_build = work / "pio"
         environment = {**os.environ, "PLATFORMIO_BUILD_DIR": str(pio_build)}
@@ -80,7 +88,7 @@ def main() -> None:
     pio = str(Path(args.pio).resolve()) if os.sep in args.pio else args.pio
     try:
         build(args.bundle.resolve(strict=True), args.output.resolve(), pio)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (BadZipFile, KeyError, OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Package build failed: {error}\n")
 
 

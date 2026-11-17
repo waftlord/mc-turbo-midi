@@ -1,0 +1,115 @@
+{
+  "p1": {
+    "din_to_usb_bytes": 24070,
+    "usb_to_din_bytes": 24068,
+    "din_to_usb_bytes_per_s": 10842,
+    "usb_to_din_bytes_per_s": 9680,
+    "din_rx_complete_to_usb_host_read_us": {
+      "p50": 604903.812,
+      "p95": 1196375.562,
+      "p99": 1245098.625,
+      "max": 1257178.938
+    },
+    "first_usb_out_bank_to_first_din_byte_us": 1079575.5,
+    "usb_out_bank_admission_to_din_complete_us": {
+      "p50": 6040.938,
+      "p95": 1021265.188,
+      "p99": 1066892.0,
+      "max": 1080885.438
+    },
+    "within_record_din_gap_us": {
+      "p50": 40.0,
+      "p95": 40.188,
+      "p99": 797.125,
+      "max": 2552.938
+    },
+    "within_record_gap_peak_to_peak_us": 2512.9375
+  },
+  "p2": {
+    "din_to_usb_bytes": 24070,
+    "usb_to_din_bytes": 24068,
+    "din_to_usb_bytes_per_s": 10852,
+    "usb_to_din_bytes_per_s": 9680,
+    "din_rx_complete_to_usb_host_read_us": {
+      "p50": 604183.812,
+      "p95": 1194575.562,
+      "p99": 1244298.625,
+      "max": 1255898.875
+    },
+    "first_usb_out_bank_to_first_din_byte_us": 1081297.125,
+    "usb_out_bank_admission_to_din_complete_us": {
+      "p50": 6150.562,
+      "p95": 1022986.625,
+      "p99": 1068613.562,
+      "max": 1082606.625
+    },
+    "within_record_din_gap_us": {
+      "p50": 40.0,
+      "p95": 40.25,
+      "p99": 787.688,
+      "max": 2480.125
+    },
+    "within_record_gap_peak_to_peak_us": 2440.125
+  },
+  "atmega2560": {
+    "execution_cycles": 39964160,
+    "isr_cycles": 12623035,
+    "isr_percent": 31.586,
+    "max_isr_cycles_by_vector": {
+      "0x44": 63,
+      "0x64": 55,
+      "0x68": 52,
+      "0x90": 73,
+      "0x94": 55,
+      "0xcc": 73,
+      "0xd0": 55
+    },
+    "max_stack_bytes_since_boot": 186,
+    "sram_gap_bytes_at_lowest_observed_sp": 5241,
+    "static_sram_reserved_bytes": 2765,
+    "flash_image_bytes": 20902,
+    "top_foreground_symbols_percent_of_cpu": {
+      "(anonymous namespace)::serviceUsbIn(unsigned long)": 11.872,
+      "(anonymous namespace)::serviceUsbOut(unsigned long)": 11.714,
+      "(anonymous namespace)::Port::serviceDin(unsigned long)": 9.306,
+      "(anonymous namespace)::Port::readDin(unsigned long)": 7.471,
+      "bridgeReceive(BridgeReceiver*, unsigned char) [clone .constprop.2]": 7.31,
+      "(anonymous namespace)::sendFrame(unsigned char, unsigned char const*, unsigned char)": 4.878,
+      "main": 4.705,
+      "(anonymous namespace)::Queue::pushEvent(unsigned char const*)": 3.012
+    }
+  },
+  "atmega16u2": {
+    "execution_cycles": 39964158,
+    "isr_cycles": 7279856,
+    "isr_percent": 18.216,
+    "max_isr_cycles_by_vector": {
+      "0x3c": 94,
+      "0x5c": 61,
+      "0x60": 59
+    },
+    "max_stack_bytes_since_boot": 83,
+    "sram_gap_bytes_at_lowest_observed_sp": 15,
+    "static_sram_reserved_bytes": 414,
+    "flash_image_bytes": 10930
+  },
+  "queue_high_water_bytes": {
+    "main_link_rx": 81,
+    "uart0_tx": 66,
+    "din1_raw_rx": 8114,
+    "uart1_tx": 244,
+    "din2_raw_rx": 8105,
+    "uart2_tx": 248,
+    "p1_to_din": 7150,
+    "p1_to_host": 8104,
+    "p2_to_din": 7150,
+    "p2_to_host": 8104,
+    "usb_link_tx_exact": 53
+  },
+  "main_queue_samples": 4052,
+  "case": "stress",
+  "sha256": {
+    "megacommand-diy-dual-atmega16u2-dfu.hex": "dfc3b0a198b01d495d7f2f5df6c42a703741bd65fb5c82ee41c8c699552bdf1e",
+    "megacommand-diy-dual-atmega2560-update.hex": "b42a7e51c1c9e34eced1c678f74753cb619b4ba9b07d5bb5a59ec3ca37beb3d1"
+  }
+}
