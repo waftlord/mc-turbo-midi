@@ -19,6 +19,7 @@ constexpr uint8_t oledData = _BV(PL5);
 constexpr uint8_t oledReset = _BV(PD7);
 constexpr uint8_t turboLed[] = {_BV(PE5), _BV(PE4)};
 constexpr uint8_t activityMs = 100;
+constexpr uint16_t limitPreviewMs = 1500;
 constexpr uint8_t debounceMs = 16;
 constexpr uint8_t splashMs = 200;
 constexpr uint8_t progressX = 28;
@@ -26,6 +27,7 @@ constexpr uint8_t progressWidth = 72;
 constexpr uint8_t progressInterior = progressWidth - 2;
 constexpr uint8_t progressPage = 3;
 constexpr uint16_t activityMask = 0x00c0;
+constexpr uint16_t limitMask = 0x0f00;
 
 // Map four source pixels to eight pixels for the large OLED text.
 constexpr uint8_t doubledNibble[] PROGMEM = {
@@ -79,7 +81,7 @@ constexpr uint8_t glyphs[][5] PROGMEM = {
     {0x7F, 0x41, 0x41, 0x22, 0x1C}, // D
     {0x7F, 0x49, 0x49, 0x49, 0x41}, // E
     {0x7F, 0x09, 0x09, 0x09, 0x01}, // F
-    {}, // G
+    {0x3E, 0x41, 0x49, 0x49, 0x7A}, // G
     {}, // H
     {0x00, 0x41, 0x7F, 0x41, 0x00}, // I
     {}, // J
@@ -97,6 +99,7 @@ constexpr uint8_t glyphs[][5] PROGMEM = {
     {}, // V
     {0x3F, 0x40, 0x38, 0x40, 0x3F}, // W
     {0x63, 0x14, 0x08, 0x14, 0x63}, // X
+    {0x07, 0x08, 0x70, 0x08, 0x07}, // Y
 };
 
 uint8_t shiftReadByte() {
@@ -198,6 +201,7 @@ void Panel::dinReady() {
 
 void Panel::showUsbUpdate() {
     if (screen_ == Screen::Recovery) return;
+    endByte_ = frameBytes;
     screen_ = Screen::Recovery;
     PORTE &= ~(turboLed[0] | turboLed[1]);
     memset(frame_, 0, sizeof(frame_));
@@ -210,6 +214,7 @@ uint8_t Panel::takeTurboPresses(uint32_t now) {
     if (now - lastButtonPoll_ < 2) return 0;
     lastButtonPoll_ = now;
     const uint8_t down = pressedButtons();
+    if (down == stableDown_ && down == rawDown_) return 0;
     uint8_t pressed = 0;
     for (uint8_t i = 0; i < 4; ++i) {
         const uint8_t mask = 1 << i;
@@ -228,8 +233,8 @@ void Panel::Activity::pulse(uint32_t now) {
     active = true;
 }
 
-bool Panel::Activity::visible(uint32_t now) {
-    if (active && now - last >= activityMs) {
+bool Panel::Activity::visible(uint32_t now, uint16_t duration) {
+    if (active && now - last >= duration) {
         active = false;
     }
     return active;
@@ -237,15 +242,18 @@ bool Panel::Activity::visible(uint32_t now) {
 
 void Panel::midiIn(uint8_t port, uint32_t now) { input_[port].pulse(now); }
 void Panel::midiOut(uint8_t port, uint32_t now) { output_[port].pulse(now); }
+void Panel::previewLimit(uint8_t port, uint32_t now) { limitEdit_[port].pulse(now); }
 
 void Panel::service(uint32_t now, const Status *ports, bool usbReady) {
     uint16_t state[2] = {};
-    uint8_t activity[2] = {};
     for (uint8_t i = 0; i < 2; ++i) {
         const Status &port = ports[i];
-        activity[i] = input_[i].visible(now) | (output_[i].visible(now) << 1);
+        const uint8_t activity = input_[i].visible(now, activityMs)
+                                 | (output_[i].visible(now, activityMs) << 1);
+        const bool editing = limitEdit_[i].visible(now, limitPreviewMs);
+        const uint8_t shownLimit = (editing || port.previewLimit || port.negotiating) ? port.limit : 0;
         state[i] = port.speed | (port.negotiating << 4) | (port.linkFailed << 5)
-                   | (activity[i] << 6) | (port.limit << 8)
+                   | (activity << 6) | (shownLimit << 8)
                    | (static_cast<uint16_t>(port.fault) << 12);
         const bool lit = port.negotiating ? (now & 128) : port.speed > 1;
         if (lit) PORTE |= turboLed[i];
@@ -263,23 +271,37 @@ void Panel::service(uint32_t now, const Status *ports, bool usbReady) {
     }
     const bool usbChanged = usbReady != usbDisplayed_;
     const uint16_t changes = (state[0] ^ displayed_[0]) | (state[1] ^ displayed_[1]);
-    if (firstPorts || usbChanged || (changes & ~activityMask)) {
-        drawPorts(ports, activity, usbReady);
+    if (firstPorts || usbChanged || (changes & ~(activityMask | limitMask))) {
+        drawPorts(ports, state, usbReady);
         displayed_[0] = state[0];
         displayed_[1] = state[1];
+        endByte_ = frameBytes;
         screen_ = Screen::Ports;
         usbDisplayed_ = usbReady;
         nextByte_ = 0;
         fastFlush_ = true;
     } else if (changes && nextByte_ == frameBytes) {
-        // Only rewrite the four columns of the changed indicator. Service
-        // at most one per tick to bound foreground time during MIDI bursts.
+        // Update one cap label or activity indicator per tick so MIDI service
+        // resumes between short SPI writes.
         for (uint8_t i = 0; i < 2; ++i) {
             const uint16_t changed = state[i] ^ displayed_[i];
             if (!changed) continue;
+            if (changed & limitMask) {
+                const uint8_t x = i * (width / 2);
+                uint8_t *row = frame_ + 2 * width + x;
+                memset(row + 22, 0, 36);
+                drawMode(x, ports[i], (state[i] & limitMask) != 0, usbReady);
+                // Three 16-column chunks cover the changed middle label.
+                // Keep pending activity changes queued for their usual turn.
+                nextByte_ = 2 * width + x + 16;
+                endByte_ = 2 * width + x + 64;
+                fastFlush_ = true;
+                displayed_[i] ^= changed & limitMask;
+                break;
+            }
             const uint8_t row = (changed & 0x40) ? 0 : 1;
             const uint8_t x = i * (width / 2) + 50;
-            drawIndicator(x, row * 8, activity[i] & (1 << row));
+            drawIndicator(x, row * 8, state[i] & (uint16_t{0x40} << row));
             writePixels(x, row, frame_ + row * width + x, 4);
             displayed_[i] ^= uint16_t{0x40} << row;
             break;
@@ -302,7 +324,7 @@ void Panel::drawProgress(uint8_t filled) {
     }
 }
 
-void Panel::drawPorts(const Status *ports, const uint8_t *activity, bool usbReady) {
+void Panel::drawPorts(const Status *ports, const uint16_t *state, bool usbReady) {
     memset(frame_, 0, sizeof(frame_));
     constexpr uint8_t portWidth = width / 2;
     frame_[portWidth - 1] = 0xff;
@@ -315,12 +337,10 @@ void Panel::drawPorts(const Status *ports, const uint8_t *activity, bool usbRead
         const char *speed = speedLabel(port.speed);
         drawText(x + 5, 0, speed, strlen(speed) <= 2 ? 2 : 1);
         drawText(x + 39, 0, "I", 1);
-        drawIndicator(x + 50, 0, activity[i] & 1);
+        drawIndicator(x + 50, 0, state[i] & 0x40);
         drawText(x + 39, 8, "O", 1);
-        drawIndicator(x + 50, 8, activity[i] & 2);
+        drawIndicator(x + 50, 8, state[i] & 0x80);
         drawText(x + 4, 17, i ? "P2" : "P1", 1);
-        drawText(x + 22, 17, "MAX", 1);
-        drawText(x + 46, 17, speedLabel(port.limit), 1);
         const char *label = nullptr;
         switch (port.fault) {
         case Fault::RxFull: label = "RX FULL"; break;
@@ -330,12 +350,22 @@ void Panel::drawPorts(const Status *ports, const uint8_t *activity, bool usbRead
         case Fault::None: break;
         }
         if (!label && !usbReady) label = "WAIT USB";
-        if (!label && port.negotiating) label = "TURBO";
+        if (!label && port.negotiating) label = "LINKING";
         if (!label && port.linkFailed) label = "NO TURBO";
+        drawMode(x, port, (state[i] & limitMask) != 0, usbReady);
         if (label) {
             const uint8_t textWidth = strlen(label) * 6 - 1;
             drawText(x + (portWidth - textWidth) / 2, 24, label, 1);
         }
+    }
+}
+
+void Panel::drawMode(uint8_t x, const Status &port, bool showLimit, bool usbReady) {
+    if (showLimit) {
+        drawText(x + 22, 17, "MAX", 1);
+        drawText(x + 46, 17, speedLabel(port.limit), 1);
+    } else if (usbReady && !port.negotiating && !port.linkFailed && port.fault == Fault::None) {
+        drawText(x + 22, 17, port.speed > 1 ? "TURBO" : "READY", 1);
     }
 }
 
@@ -344,7 +374,7 @@ void Panel::drawText(uint8_t x, uint8_t y, const char *text, uint8_t scale) {
     // Single-height glyphs can shift down one pixel within the page.
     const uint8_t shift = y & 1;
     for (; *text && x + 5 * scale <= width; ++text, x += 6 * scale) {
-        if (*text < '0' || *text > 'X') continue;
+        if (*text < '0' || *text > 'Y') continue;
         const uint8_t *glyph = glyphs[*text - '0'];
         uint8_t *out = row + x;
         for (uint8_t column = 0; column < 5; ++column) {
@@ -374,6 +404,7 @@ void Panel::flushChunk() {
     constexpr uint8_t chunkBytes = 16;
     writePixels(nextByte_ % width, nextByte_ / width, frame_ + nextByte_, chunkBytes);
     nextByte_ += chunkBytes;
+    if (nextByte_ == endByte_) nextByte_ = frameBytes;
 }
 
 void Panel::writePixels(uint8_t column, uint8_t page, const uint8_t *data, uint8_t count) {

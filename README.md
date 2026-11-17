@@ -14,6 +14,7 @@ For an offline install, have AVRDUDE available for the 2560 serial upload and `d
 | --- | --- |
 | Full MCL or a stock USB-to-serial Mega 2560 DIY | Upload the 2560 application, then install the dual-port 16U2 image using hardware DFU. |
 | Dual bridge v1.0.0 or v1.0.1 with its matched USB firmware | Upload the 2560 application, then install the candidate 16U2 image using hardware DFU. Both releases shipped the same older USB image. The candidate also updates USB control handling under load. |
+| Prior audit candidate with verified 16U2 image `85941b0d…` | Upload the new ATmega2560 application. This display update uses the same 16U2 HEX. |
 | Unknown or mismatched pair | Use the 2560 serial and 16U2 hardware DFU steps below to establish a known pair. |
 
 **Upload the ATmega2560 application**
@@ -44,7 +45,11 @@ For an offline install, have AVRDUDE available for the 2560 serial upload and `d
 
 Select the matching input and output for each **MegaCMD Port 1** and **Port 2** pair in your MIDI application. Send `F0 7D 4D 43 4C 01 01 F7` on one output at a time. On a cold boot the reply on the same input should be `F0 00 20 3C 04 00 02 01 F7`. This read-only query leaves negotiation idle. For a DIN receive check, initiate a known saved dump from the instrument on that port and compare the content. For a DIN OUT check, use an isolated loopback or an independent receiver. See [per-port controls and Turbo rates](PROTOCOL.md).
 
-The upper OLED number is the **settled DIN rate**. **MAX** is the per-port requested limit. **PAGE / SHIFT** toggle Turbo on Ports 1 / 2. **SAVE / LOAD** cycle their limits. The LEDs blink during a transition and stay lit at a settled Turbo rate. The I/O indicators show activity. The bottom line can show a latched **DIN ERR**, **RX FULL**, **TX FULL**, or **USB ERR**. Restart an interrupted transfer from its beginning after the port recovers.
+Each port shows its settled DIN rate in large type. **READY** means the bridge can pass standard 1× MIDI on that port. **TURBO** means a faster rate has settled. The small **I** and **O** indicators pulse with traffic.
+
+**PAGE / SHIFT** toggle Turbo on Ports 1 / 2. **SAVE / LOAD** cycle their limits. Editing a limit shows **MAX** on that port for 1.5 seconds. It also stays visible while a request is queued or a rate is being negotiated. During negotiation the panel shows **LINKING**, the LED blinks, and the large number continues to show the last settled rate. When Turbo settles, the LED stays lit. A read-only query leaves the display in its normal state.
+
+**WAIT USB** indicates the USB connection is unavailable. **NO TURBO** indicates the negotiation failed. **DIN ERR**, **RX FULL**, **TX FULL**, and **USB ERR** take priority. Restart an interrupted transfer from its beginning after the port recovers.
 
 **If an upload fails**
 

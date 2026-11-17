@@ -412,6 +412,7 @@ struct Port {
                     requestedLimit = frame[7];
                     requestedLimitFromHost = true;
                     fault = Panel::Fault::None;
+                    panel.previewLimit(number, nowMs());
                 }
                 credit += size;
                 if (sysexEnds) --sysexEnds;
@@ -570,11 +571,12 @@ struct Port {
         parser.accept(value, number << 4, [this](const uint8_t *event) { packet(event); });
     }
 
-    void cycleLimit() {
+    void cycleLimit(uint32_t now) {
         const uint8_t current = requestedLimit == noLimit ? turbo.limit() : requestedLimit;
         requestedLimit = current < 2 ? 2 : current < 4 ? 4 : current < 7 ? 7 : 1;
         requestedLimitFromHost = false;
         fault = Panel::Fault::None;
+        panel.previewLimit(number, now);
     }
 
     __attribute__((noinline)) void serviceDin(uint32_t now) {
@@ -948,7 +950,7 @@ int main() {
                     port.button = !port.button;
                     port.fault = Panel::Fault::None;
                 }
-                if (pressed & (4 << port.number)) port.cycleLimit();
+                if (pressed & (4 << port.number)) port.cycleLimit(now);
                 port.serviceReport();
                 uint8_t limit = port.turbo.limit();
                 if (port.requestedLimit != noLimit) {
@@ -956,7 +958,8 @@ int main() {
                             port.requestedLimit >= 2 ? 2 : 1;
                 }
                 status[port.number] = {port.turbo.speed(), limit,
-                                       port.turbo.busy(), port.turbo.failed(), port.fault};
+                                       port.turbo.busy(), port.turbo.failed(), port.fault,
+                                       port.requestedLimit != noLimit};
             }
             panel.service(now, status, usbReady);
         }

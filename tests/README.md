@@ -40,11 +40,14 @@ Run the peer-failure replay and the isolated front-panel probe from the same dir
 ```sh
 python3 -B tests/negotiation_fault_replay.py
 python3 -B tests/panel_replay.py
+python3 -B tests/panel_controls_replay.py
 ```
 
 The peer replay uses the matched HEX pair. It checks the next clean SysEx, running-status and clock traffic on both ports after a missing reply, an incompatible answer or simultaneous requests. It also tests a consumed DIN control between channel messages, and loss of a 2× peer while the other link keeps delivering at 4×. The UART fault replay includes cutoffs with zero, one and two valid SysEx payload bytes still awaiting a USB packet when the error arrives. It also queues a complete note between two errors before the foreground can read the ring and verifies the exact coalesced loss interval.
 
-The panel probe compiles `src/Panel.cpp` and a small driver for the ATmega2560 with AVR GCC, then runs them in the instruction model. It compares OLED pixel data, the cycles for the first activity service call and all SPI bytes until the indicator settles. SPI-ready is immediate in the model. This measures renderer work. It does not qualify physical panel timing or contrast. Pass `--source /path/to/other/src` to measure another version against the same checks.
+The panel probe compiles the renderer for the ATmega2560 and checks the OLED pixels for both ports, the LEDs, and SPI traffic after each activity edge. It tests cap previews through independent expiry, a repeated edit and millisecond timer wrap. Pass `--source /path/to/other/src` to compare another revision. The probe models an immediately ready SPI peripheral.
+
+The panel controls replay runs the production HEX pair. It checks that the read-only speed query leaves both ports READY with quiet DIN outputs. It then applies a USB cap and operates SAVE and LOAD through the modeled shift register, verifies the affected OLED column and expiry, exercises failed negotiation, and compares fresh notes on both routes.
 
 ### USB transport and fault recovery
 

@@ -1,8 +1,28 @@
 # Dual Turbo MIDI candidate qualification
 
-This review started at GitHub main and v1.0.1, both `39bc248daa31e7a1cab6e9db508be1df3c4175fe`. The older local bench checkout has separate history. Its recordings supplied the earlier physical evidence. The pinned PlatformIO environment (Atmel AVR 5.1.0, avr-gcc 7.3.0) reproduced both v1.0.1 HEX files byte-for-byte. The v1.0.0 2560 rebuild also matched the published `28632909…` image. Both releases shipped the same `dfc3b0a1…` 16U2 image. The candidate images are identified by [SHA256SUMS](SHA256SUMS).
+This review started at GitHub main and v1.0.1, both `39bc248daa31e7a1cab6e9db508be1df3c4175fe`. The older local bench checkout has separate history. Its recordings supplied the earlier physical evidence. The pinned PlatformIO environment (Atmel AVR 5.1.0, avr-gcc 7.3.0) reproduced both v1.0.1 HEX files byte-for-byte. The v1.0.0 2560 rebuild also matched the published `28632909…` image. Both releases shipped the same `dfc3b0a1…` 16U2 image. The current candidate images are identified by [SHA256SUMS](SHA256SUMS). The initial audit and extended hardware qualification below were performed with ATmega2560 `d5dd98ae` and ATmega16U2 `85941b0d` at `1044182`. The panel revision uses ATmega2560 `56c423d0` with the same 16U2 image.
 
-## Findings
+## Current OLED revision
+
+The panel shows the settled rate above each port and leaves its I/O indicators visible. In normal operation the small per-port label reads READY at 1× or TURBO at a confirmed faster rate. MAX appears only while editing or negotiating, with LINKING on the lower line during negotiation. An explicit limit edit starts a 1.5-second preview on that port. Latched faults take priority over USB wait and negotiation details.
+
+The compiled pixel regression checks both columns, the LEDs and all four activity indicators. It exercises independent cap expiry, repeated edits and timer wrap. The production-image regression operates SAVE and LOAD through the modeled button shift register and sends a host limit on one cable. A read-only probe left both ports READY and both DIN outputs quiet. After a missing peer on Port 2, both ports passed fresh notes in both directions.
+
+A full redraw for each preview transition took 608 SPI bytes in the first implementation. The final renderer uses three 16-column writes for a single label (57 SPI bytes including commands). Each activity edge still uses seven SPI bytes. The button scan skips debounce work when the sampled and debounced states already match. The ATmega2560 uses 22,310 bytes of flash and 2,789 bytes of static internal SRAM.
+
+| Dual 8× stress, Port 1 / Port 2 | v1.0.1 | 1044182 | Current OLED |
+| --- | ---: | ---: | ---: |
+| DIN OUT maximum gap (ms) | 2.553 / 2.480 | 2.474 / 1.983 | 2.034 / 1.974 |
+| DIN OUT p99 gap (ms) | 0.797 / 0.788 | 0.889 / 0.875 | 0.728 / 0.722 |
+| DIN → USB throughput (B/s) | 10,842 / 10,852 | 11,071 / 11,076 | 11,211 / 11,211 |
+| USB → DIN throughput (B/s) | 9,680 / 9,680 | 10,002 / 10,001 | 9,977 / 9,976 |
+| First admitted USB OUT bank to first DIN byte (ms) | 1,079.6 / 1,081.3 | 932.0 / 934.3 | 1,030.2 / 1,032.0 |
+
+The stress results use the same paired AVR workload and 128 ms host stall. All 32 paired qualification jobs and the native transport regression passed on the revised pair, including the public fixture and the local 4,038-byte dump. Byte counts matched in both directions on both ports. Compared with the installed 1044182 build, the final image reduced the largest and 99th-percentile within-record gaps, while the first DIN byte arrived about 98 ms later under this load. [Current stress profile](tests/measurements/candidate-stress.json) · [Current short profile](tests/measurements/candidate-short.json)
+
+On the connected unit, the local USB update command selected serial mode. AVRDUDE verified the installed 21,848-byte image, wrote the new 22,310-byte ATmega2560 image in 88 pages and verified the programmed bytes by read-back. The previously verified ATmega16U2 stayed installed. The board returned to USB MIDI and each port answered the read-only speed query exactly once at 1× on its own input. The operator confirmed READY on both physical OLED columns. Fault-specific OLED screens and timing were checked in the model.
+
+## Findings on v1.0.1
 
 | Priority | Reproduced behavior on v1.0.1 | Candidate change and regression |
 | --- | --- | --- |
@@ -23,7 +43,7 @@ This review started at GitHub main and v1.0.1, both `39bc248daa31e7a1cab6e9db508
 - **Limits.** An external DIN sender cannot be backpressured indefinitely. Apart from deliberate prefilling, a shared USB endpoint and ordered USB OUT stream can couple queueing latency across ports even with separate per-port byte credits. A session reset invalidates traffic in flight on both ports. Two RX gaps still pending when foreground reaches the first coalesce through the last. A valid message entirely between those gaps can be discarded. Realtime can precede a still-incomplete one- or two-byte DIN SysEx group in the USB event stream. The per-cable bank rule protects the legacy CoreMIDI EOX behavior at emitted event boundaries.
 - **Qualification.** A recovery F7 only closes an interrupted message. The tests compare the valid prefix and the complete successor and check cable placement. Reconnect, query each endpoint afresh, and restart interrupted librarian transfers.
 
-## Physical and modeled coverage
+## Physical and modeled coverage at 1044182
 
 | Path or case | Evidence |
 | --- | --- |
@@ -49,9 +69,9 @@ Hardware input captures stay local. The public tree includes the comparator, tes
 
 Use the [test commands](tests/README.md) and the same version of the harness when passing each pair with `--images`. For profiling, also pass its matching ATmega2560 ELF via `--elf`. The profiler checks the ELF against the HEX before reading queue symbols. The four-record local replay input had SHA-256 `5390a83f29c8819d763b35442c051b8c40411e2c3c8ca5f2ee4776fd14913d66`. The public synthetic fixture has the same record sizes and exercises the same routes.
 
-The stress run starts four simultaneous transfers, negotiates both ports to 8× and pauses host IN reads for 128 ms. Each port delivers 24,070 bytes to the host and 24,068 bytes to DIN. The short run uses the four-record fixture at 8× without the stall, with three inserted realtime bytes per incoming stream and one per outgoing stream. Throughput includes startup prefill. DIN receive latency runs from the modeled wire byte's completion to the USB host read. Transmit latency runs from admission of its USB OUT bank to the DIN byte's completion. It excludes waiting in the host's submission queue. SPI, interrupt arbitration, external RAM cycles, UART FIFOs and 1 ms USB polling are modeled. Queue maxima on the 2560 are sampled lower bounds. Neither timing nor stack measurements establish worst-case hardware limits.
+The stress run starts four simultaneous transfers, negotiates both ports to 8× and pauses host IN reads for 128 ms. Each port delivers 24,070 bytes to the host and 24,068 bytes to DIN. The short profile uses the public synthetic four-record fixture at 8× without the stall, with three inserted realtime bytes per incoming stream and one per outgoing stream. Throughput includes startup prefill. DIN receive latency runs from the modeled wire byte's completion to the USB host read. Transmit latency runs from admission of its USB OUT bank to the DIN byte's completion. It excludes waiting in the host's submission queue. SPI, interrupt arbitration, external RAM cycles, UART FIFOs and 1 ms USB polling are modeled. Queue maxima on the 2560 are sampled lower bounds. Neither timing nor stack measurements establish worst-case hardware limits.
 
-### Dual 8× stress, 128 ms host stall
+### Dual 8× stress, 128 ms host stall at 1044182
 
 | Metric, Port 1 / Port 2 | v1.0.1 | Candidate |
 | --- | ---: | ---: |
@@ -80,7 +100,7 @@ The stress run starts four simultaneous transfers, negotiates both ports to 8× 
 | Modeled cycles in ISRs | 12623035 / 7279856 | 12599144 / 7245659 |
 | Share of CPU cycles spent in ISRs (%) | 31.586 / 18.216 | 32.568 / 18.73 |
 
-### Unpaused 4,038-byte capture at negotiated 8×
+### Unpaused 4,038-byte synthetic fixture at negotiated 8× at 1044182
 
 | Metric, Port 1 / Port 2 | v1.0.1 | Candidate |
 | --- | ---: | ---: |
@@ -96,4 +116,4 @@ Both directions gained throughput in the concurrent stress run. The largest DIN 
 
 In a separate stressed EP0 run, the candidate handled 78 device-descriptor reads, and a separate run handled 78 Port 2 string-descriptor reads. All MIDI bytes matched; the lowest observed stack margin during these transfer windows was 18 B. The ordinary stress trace, measured from boot, reached 13 B. CDC SET/GET requests at 115200 during four synthetic bootloader readbacks preserved 54 outbound and 565 inbound serial bytes, with 15 B of observed stack margin. These small margins remain relevant when changing USB firmware.
 
-Full per-vector maxima, latency percentiles, queue samples, flash identities and CPU attribution are in the [v1.0.1 stress](tests/measurements/v1.0.1-stress.json), [candidate stress](tests/measurements/candidate-stress.json), [v1.0.1 short](tests/measurements/v1.0.1-short.json) and [candidate short](tests/measurements/candidate-short.json) profiles.
+Full per-vector maxima, latency percentiles, queue samples, flash identities and CPU attribution are in the [v1.0.1 stress](tests/measurements/v1.0.1-stress.json), [1044182 stress](tests/measurements/1044182-stress.json), [v1.0.1 short](tests/measurements/v1.0.1-short.json) and [1044182 short](tests/measurements/1044182-short.json) profiles.

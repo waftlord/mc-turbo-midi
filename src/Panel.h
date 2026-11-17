@@ -12,6 +12,7 @@ public:
         bool negotiating;
         bool linkFailed;
         Fault fault;
+        bool previewLimit;
     };
 
     void begin();
@@ -21,6 +22,7 @@ public:
     uint8_t takeTurboPresses(uint32_t now);
     void midiIn(uint8_t port, uint32_t now);
     void midiOut(uint8_t port, uint32_t now);
+    void previewLimit(uint8_t port, uint32_t now);
     void service(uint32_t now, const Status *ports, bool usbReady);
     void flushPriorityChunk();
 
@@ -32,10 +34,11 @@ private:
         bool active = false;
 
         void pulse(uint32_t now);
-        bool visible(uint32_t now);
+        bool visible(uint32_t now, uint16_t duration);
     };
 
-    void drawPorts(const Status *ports, const uint8_t *activity, bool usbReady);
+    void drawPorts(const Status *ports, const uint16_t *state, bool usbReady);
+    void drawMode(uint8_t x, const Status &port, bool showLimit, bool usbReady);
     void drawProgress(uint8_t filled);
     void drawText(uint8_t x, uint8_t y, const char *text, uint8_t scale);
     void drawIndicator(uint8_t x, uint8_t y, bool active);
@@ -48,9 +51,11 @@ private:
 
     uint8_t frame_[frameBytes] = {};
     uint16_t nextByte_ = frameBytes;
+    uint16_t endByte_ = frameBytes;
     uint32_t lastButtonPoll_ = 0;
     uint32_t rawChangedAt_[4] = {};
     Activity input_[2], output_[2];
+    Activity limitEdit_[2];
     uint16_t displayed_[2] = {0xffff, 0xffff};
     Screen screen_ = Screen::Starting;
     bool usbDisplayed_ = false;
