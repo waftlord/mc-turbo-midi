@@ -23,6 +23,16 @@ Change speeds between transfers with one initiator per DIN pair. A simultaneous 
 
 For stock equipment or an unknown model, begin at 1× or use a conservative 4× cap during qualification. Raise the cap only after the peer is stable. For unidirectional connections, use 1×. Active Sensing used for Turbo is link-local. The bridge also consumes exact DIN TurboMIDI handshake frames and a host-side USB recovery command. These reserved frames are not a general-purpose tunnel.
 
+### Machinedrum MIDI UPGRADE
+
+Enter **READY TO RECEIVE MIDI UPGRADE** with both DIN cables connected. Press **PAGE** for Port 1 or **SHIFT** for Port 2 and wait for **TURBO** before sending the OS file. If a previous negotiation left the devices at different rates, return the bridge to 1× and re-enter MIDI UPGRADE on the Machinedrum before retrying.
+
+The stock 1.63 startup receiver answers the DIN speed request (`10`) with `11 7F 00 00 00` after the Elektron header. It advertises no certified speeds but accepts both tests at the proposed transfer rate. With the default maximum, the bridge tries 8×, then 4×, then 2× as needed. A user-selected lower cap limits the first attempt. The receiver must return the test pattern and second test result (`17`). If a peer with the same capabilities declines an equal-rate proposal, the bridge retries it with a faster test rate. The TM-1 v1.05 button handshake also uses `10` and selects its final rate after `17`. [Elektron TM-1 firmware](https://www.elektron.se/support-downloads/accessories)
+
+If that capability reply is followed by silence, the bridge repeats `10` at the final rate. A matching complete reply releases queued data and allows the port to stay at Turbo while the receiver is silent. A peer sending Active Sensing uses the ordinary timeout. After the upgrade, turn Turbo off on the bridge before reconnecting or returning to normal operation. A silent receiver and a disconnected cable look alike. Turning Turbo off sends `12 01 01` at the negotiated rate and returns the bridge to 1×.
+
+On the physical Port 1 upgrade-mode check, the receiver acknowledged the 8× proposal but gave no first test result at that speed. It returned both test results at 4× and answered discovery again at 4×. The regular application subsequently negotiated and held 4× under the maximum cap. This check exercised negotiation through the ready screen. The OS file was not sent.
+
 ## Web MIDI examples
 
 [The passive capture example](examples/passive-capture.html) listens to either or both MIDI inputs and saves raw SysEx without sending MIDI. For applications that control bridge speed, [the Web MIDI adapter](examples/web-midi.mjs) takes a paired input and output obtained with `navigator.requestMIDIAccess({sysex: true})` in a secure context. Call `querySpeed()` or `setLimit(4)` as needed and receive ordinary messages through `onMidi`. Other MIDI backends can send and parse the same bytes.

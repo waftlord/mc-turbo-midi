@@ -7,6 +7,9 @@ namespace {
 // DIN negotiation follows the TurboMIDI protocol. See THIRD_PARTY_NOTICES.md.
 constexpr uint8_t header[] = {0xF0, 0x00, 0x20, 0x3C, 0x00, 0x00};
 constexpr uint8_t pattern[] = {0x55, 0x55, 0x55, 0x55, 0, 0, 0, 0};
+// The Machinedrum early-startup receiver advertises rates through 10x,
+// certifies none and answers speed requests even after switching baud.
+constexpr uint8_t upgradeCapabilities[] = {0x7f, 0, 0, 0};
 constexpr uint8_t activeSense = 0xFE;
 constexpr uint8_t capabilityBit(uint8_t speed) { return 1u << (speed - 2); }
 
@@ -52,6 +55,8 @@ bool TurboLink::busy() const {
 }
 
 void TurboLink::enter(State state, uint32_t now) {
+  if (state == State::Normal || state == State::SendAnswer) higherTestForRate_ = 0;
+  if (state == State::SendRequest || state == State::SendAnswer) upgradeReceiver_ = false;
   if (state == State::SendRequest) initiator_ = true;
   if (state == State::SendAnswer) initiator_ = false;
   state_ = state;
@@ -84,6 +89,10 @@ void TurboLink::stop(uint32_t now, uint8_t restartLimit, bool failed, bool waitF
   // A peer can switch speeds before its acknowledgement arrives.
   // Stop keepalives so the peer can time out.
   if (state_ == State::Recovering) return;
+  // A lost second result can leave an upgrade receiver at its final rate
+  // even though our UART is still at the test rate.
+  upgradeReceiver_ = upgradeReceiver_ &&
+      (state_ == State::WaitResult2 || wireSpeed_ == finalSpeed_);
   const bool peerMayHaveSwitched = wireSpeed_ != normalSpeed ||
                                    state_ == State::WaitAck || state_ == State::SendTest1 ||
                                    state_ == State::DrainAck;
@@ -99,6 +108,12 @@ void TurboLink::stop(uint32_t now, uint8_t restartLimit, bool failed, bool waitF
 }
 
 void TurboLink::failNegotiation(uint32_t now, bool retry) {
+  if (retry && upgradeReceiver_ && state_ == State::WaitAck && testSpeed_ == finalSpeed_) {
+    // A different peer with the same mask may require the standard faster test.
+    higherTestForRate_ = finalSpeed_;
+    stop(now, finalSpeed_, false);
+    return;
+  }
   const uint8_t retryLimit = retry && finalSpeed_ > 2 ? finalSpeed_ - 1 : 0;
   stop(now, retryLimit, retryLimit == 0);
 }
@@ -155,6 +170,9 @@ bool TurboLink::sendCommand(uint8_t command, const uint8_t* payload,
 }
 
 void TurboLink::chooseSpeeds(const uint8_t* answer, uint32_t now) {
+  upgradeReceiver_ = memcmp(answer, upgradeCapabilities, sizeof(upgradeCapabilities)) == 0;
+  const uint8_t higherTest = higherTestForRate_;
+  higherTestForRate_ = 0;
   const uint8_t common = answer[0] & allowedMask(attemptLimit_);
   const uint8_t certified = answer[2] & common;
   const uint8_t highestTest = attemptLimit_ == maximumSpeed &&
@@ -167,6 +185,17 @@ void TurboLink::chooseSpeeds(const uint8_t* answer, uint32_t now) {
   for (uint8_t candidate = attemptLimit_; candidate > normalSpeed; --candidate) {
     const uint8_t bit = capabilityBit(candidate);
     if (!(common & bit)) continue;
+    if (upgradeReceiver_) {
+      // The MD loader accepts equal rates with no certification bits set.
+      // Test each payload baud itself. An 8x test can fail on a working 4x link.
+      testSpeed_ = candidate;
+      if (higherTest == candidate) {
+        testSpeed_ = candidate == 2 ? 4 : candidate == 4 ? maximumSpeed : fastTestSpeed;
+      }
+      finalSpeed_ = candidate;
+      enter(State::SendNegotiation, now);
+      return;
+    }
     if (!(certified & bit) && highestTest <= candidate) continue;
     finalSpeed_ = candidate;
     testSpeed_ = (certified & bit) ? candidate : highestTest;
@@ -199,6 +228,12 @@ bool TurboLink::receive(const uint8_t* frame, uint8_t size, uint32_t now) {
       if (state_ == State::WaitAnswer) {
         retryRequest_ = false;
         chooseSpeeds(payload, now);
+      } else if (state_ == State::WaitUpgradeAnswer &&
+                 memcmp(payload, upgradeCapabilities, sizeof(upgradeCapabilities)) == 0) {
+        failed_ = false;
+        retryRequest_ = false;
+        enter(State::Active, now);
+        publishSpeed(finalSpeed_, true);
       }
       break;
     case SpeedNegotiation:
@@ -254,6 +289,7 @@ bool TurboLink::receive(const uint8_t* frame, uint8_t size, uint32_t now) {
 uint8_t TurboLink::byteTimeout() const {
   switch (state_) {
     case State::WaitAnswer:
+    case State::WaitUpgradeAnswer:
     case State::WaitAck:
     case State::WaitResult1:
     case State::WaitResult2:
@@ -270,12 +306,14 @@ uint8_t TurboLink::byteTimeout() const {
 void TurboLink::observeDinByte(uint8_t byte, uint32_t now) {
   noteDinActivity(now);
   if (state_ == State::WaitPeer && byte >= 0x80 && byte != 0xf7) {
+    upgradeReceiver_ = false;
     failed_ = false;
     retryRequest_ = false;
     enter(State::Active, now);
     publishSpeed(finalSpeed_, true);
     return;
   }
+  if (state_ == State::Active && byte == activeSense) upgradeReceiver_ = false;
   if (!byteTimeout() || byte >= 0xF8) return;
   if (byte == 0xF0) awaitingFrame_ = true;
   if (!awaitingFrame_) return;
@@ -285,7 +323,8 @@ void TurboLink::observeDinByte(uint8_t byte, uint32_t now) {
 
 bool TurboLink::reportTransportError(uint32_t now, bool framingOnly) {
   if (framingOnly && ((state_ == State::WaitAnswer && retryRequest_) ||
-      state_ == State::WaitAck || state_ == State::Settling || state_ == State::WaitPeer)) {
+      state_ == State::WaitAck || state_ == State::Settling || state_ == State::WaitPeer ||
+      state_ == State::WaitUpgradeAnswer)) {
     // Old-rate bytes can arrive while the peer changes its UART. Discard
     // the partial frame and let the ordinary reply deadline apply.
     awaitingFrame_ = false;
@@ -389,13 +428,17 @@ void TurboLink::tick(uint32_t now) {
       return;
     case State::WaitPeer:
       if (elapsed > senseTimeout) {
-        failNegotiation(now, initiator_);
+        // A capability mask is not a device ID. Try ordinary confirmation
+        // first, then ask a silent upgrade receiver to prove its final baud.
+        if (upgradeReceiver_ && sendCommand(SpeedRequest)) enter(State::WaitUpgradeAnswer, now);
+        else failNegotiation(now, initiator_);
       } else if (now - lastSenseSent_ >= senseInterval && sendDin_(&activeSense, 1)) {
         lastSenseSent_ = now;
       }
       return;
     case State::Active:
-      if (now - lastDinByte_ > senseTimeout) {
+      // The upgrade receiver polls for the next SysEx and sends no idle MIDI.
+      if (!upgradeReceiver_ && now - lastDinByte_ > senseTimeout) {
         stop(now, 0, true, false);
       } else if (now - lastSenseSent_ >= senseInterval && sendDin_(&activeSense, 1)) {
         lastSenseSent_ = now;
@@ -404,6 +447,14 @@ void TurboLink::tick(uint32_t now) {
     case State::Recovering:
       if (!recoveryDrained_) {
         if (!dinTxIdle_()) return;
+        if (upgradeReceiver_ && wireSpeed_ != normalSpeed) {
+          // This receiver also stays at Turbo when the sender goes silent.
+          // Request 1x at its current baud, then drain F7 before switching.
+          upgradeReceiver_ = false;
+          setWireSpeed(finalSpeed_);
+          const uint8_t rates[] = {normalSpeed, normalSpeed};
+          if (sendCommand(SpeedNegotiation, rates, sizeof(rates))) return;
+        }
         // Let the peer's Active Sensing timeout expire before switching
         // the UART. It may still be transmitting at the negotiated rate.
         stateSince_ = now;
@@ -443,7 +494,7 @@ void TurboLink::tick(uint32_t now) {
     stop(now, 0, false);
   } else {
     const bool retry = state_ == State::WaitAck || state_ == State::WaitResult1 ||
-                       state_ == State::WaitResult2;
+                       state_ == State::WaitResult2 || state_ == State::WaitUpgradeAnswer;
     failNegotiation(now, retry);
   }
 }

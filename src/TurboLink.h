@@ -28,7 +28,7 @@ class TurboLink {
   // During a transition, speed is the last settled rate reported to the host.
   uint8_t speed() const { return speed_; }
   uint8_t limit() const { return hostLimit_; }
-  bool mayUseFastTest() const { return attemptLimit_ == maximumSpeed; }
+  bool mayUseFastTest() const { return state_ == State::SendRequest && attemptLimit_ == maximumSpeed; }
   bool selectedFastTest() const { return testSpeed_ == fastTestSpeed; }
   bool busy() const;
   bool pausePayload() const { return busy() && state_ != State::WaitNegotiation; }
@@ -57,6 +57,7 @@ class TurboLink {
     DrainResult2,
     Settling,
     WaitPeer,
+    WaitUpgradeAnswer,
     Active,
     Recovering,
   };
@@ -93,6 +94,8 @@ class TurboLink {
   uint8_t responderMask_ = 0;
   bool awaitingFrame_ = false;
   bool initiator_ = false;
+  bool upgradeReceiver_ = false;
+  uint8_t higherTestForRate_ = 0;
   bool recoveryDrained_ = false;
   uint16_t recoveryQuietMs_ = 0;
   bool retryRequest_ = false;

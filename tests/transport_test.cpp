@@ -440,6 +440,90 @@ void testCancelAfterPeerAcknowledges() {
     assert(link.failed() && !link.busy() && link.speed() == 1);
 }
 
+void testMachinedrumUpgradeReceiver() {
+    const auto answer = message(0, {0x11, 0x7f, 0, 0, 0});
+    enum Reply { SilentReceiver, MissingResult2, MissingFinalAnswer, SensingPeer, RequiresHigherTest };
+    struct Attempt { uint8_t cap; Reply reply; };
+    const Attempt cases[] = {{7, SilentReceiver}, {4, SilentReceiver},
+                             {2, SilentReceiver}, {2, MissingResult2},
+                             {2, MissingFinalAnswer}, {2, SensingPeer}, {4, RequiresHigherTest}};
+    for (const auto &attempt : cases) {
+        const uint8_t cap = attempt.cap;
+        endpoints[0] = Endpoint{};
+        TurboLink link(send<0>, idle, setRate<0>, report<0>);
+        const auto receive = [&](const Bytes &frame, uint32_t now) {
+            for (auto byte : frame) link.observeDinByte(byte, now);
+            assert(link.receive(frame.data(), frame.size(), now));
+        };
+        link.setLimit(cap, 0);
+        link.tick(0);
+        assert(endpoints[0].tx == message(0, {0x10}));
+        endpoints[0].tx.clear();
+        receive(answer, 4);
+        link.tick(4);
+        assert(endpoints[0].tx == message(0, {0x12, cap, cap}));
+        if (attempt.reply == RequiresHigherTest) {
+            endpoints[0].tx.clear();
+            for (unsigned now = 5; now <= 410; ++now) link.tick(now);
+            assert(endpoints[0].tx == message(0, {0x10}));
+            endpoints[0].tx.clear();
+            receive(answer, 411);
+            link.tick(411);
+            assert(endpoints[0].tx == message(0, {0x12, 7, 4}));
+            continue;
+        }
+        receive(message(0, {0x13}), 8);
+        link.tick(8);
+        assert(endpoints[0].rate == cap);
+        receive(message(0, {0x15, 0x55, 0x55, 0x55, 0x55, 0, 0, 0, 0}), 12);
+        link.tick(12);
+        if (attempt.reply == MissingResult2) {
+            endpoints[0].tx.clear();
+            link.tick(60);
+            link.tick(61);
+            assert(endpoints[0].rate == cap && endpoints[0].tx == message(0, {0x12, 1, 1}));
+            link.tick(62);
+            link.tick(413);
+            assert(link.failed() && endpoints[0].rate == 1 && !link.busy());
+            continue;
+        }
+        receive(message(0, {0x17}), 16);
+        endpoints[0].tx.clear();
+        link.tick(26);
+        assert(endpoints[0].tx == Bytes{0xfe});
+        endpoints[0].tx.clear();
+        if (attempt.reply == SensingPeer) {
+            link.observeDinByte(0xfe, 30);
+            assert(link.speed() == cap && !link.busy());
+            for (unsigned now = 31; now <= 700; ++now) link.tick(now);
+            assert(link.failed() && link.speed() == 1);
+            continue;
+        }
+        link.tick(327);
+        assert(endpoints[0].rate == cap && endpoints[0].tx == message(0, {0x10}));
+        receive(message(0, {0x11, 0x7f, 1, 0x0f, 0}), 329);
+        link.observeDinByte(0xfe, 330);
+        assert(link.pausePayload() && endpoints[0].reports == 0);
+        if (attempt.reply == MissingFinalAnswer) {
+            for (unsigned now = 331; now <= 950; ++now) link.tick(now);
+            assert(link.failed() && !link.busy() && endpoints[0].reported == 1);
+            continue;
+        }
+        receive(answer, 331);
+        endpoints[0].tx.clear();
+        for (unsigned now = 332; now <= 1000; ++now) link.tick(now);
+        assert(!link.pausePayload() && link.speed() == cap);
+        for (auto byte : endpoints[0].tx) assert(byte == 0xfe);
+        endpoints[0].tx.clear();
+        link.toggle(1001);
+        link.tick(1001);
+        assert(endpoints[0].rate == cap && endpoints[0].tx == message(0, {0x12, 1, 1}));
+        link.tick(1002);
+        link.tick(1353);
+        assert(link.speed() == 1 && endpoints[0].rate == 1 && !link.busy());
+    }
+}
+
 void testNoFinalRateConfirmationRetriesLower() {
     for (auto &endpoint : endpoints) endpoint = Endpoint{};
     TurboLink initiator(send<0>, idle, setRate<0>, report<0>);
@@ -471,6 +555,7 @@ int main() {
     testCancelAfterPeerAcknowledges();
     testTwoDifferentRates();
     testIndependentFinalRateConfirmation();
+    testMachinedrumUpgradeReceiver();
     testFastTestSerial();
     testSimultaneousRequestsSettleAndCanBeRetried();
     testNoFinalRateConfirmationRetriesLower();

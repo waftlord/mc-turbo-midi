@@ -41,7 +41,7 @@ The four transfers start together. Throughput for a direction includes initial b
 
 CPU totals cover the replay and its 12 ms drain. Both processors poll continuously. The profiler counts instruction cycles and vector-entry time, attributes IRQ and foreground cycles separately, and measures maximum observed ISR duration. It samples the 2560 queues on entry and return from `serviceUsbOut` to avoid reading a half-updated 16-bit index. Those high-water values are lower bounds. The 16U2 TX ring counter is observed on every write. SRAM margin uses the lowest modeled stack pointer since boot and reserved static memory. These timings assume the model's interrupt, XMEM, SPI and endpoint behavior and 1 ms host polling. They measure neither real-time host scheduling nor a hardware worst-case stack bound.
 
-Run the peer-failure replay and the isolated front-panel probe from the same directory.
+Run the peer replay against the release images in `build/`. The startup case models the Machinedrum's `7F 00 00 00` capability reply, a timeout during the 8× test, successful 4× tests and the silent wait for an OS file. It checks that the default cap finds 4× automatically, queued SysEx waits for confirmation, and an explicit stop returns the port to 1×.
 
 ```sh
 python3 -B tests/negotiation_fault_replay.py
